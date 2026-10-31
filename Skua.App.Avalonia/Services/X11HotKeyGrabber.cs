@@ -413,8 +413,6 @@ internal sealed class X11HotKeyGrabber : IDisposable
 
     private static unsafe int CallErrorHandler(IntPtr handler, IntPtr display, IntPtr errorEvent)
     {
-        // The pointer returned by XSetErrorHandler is already an unmanaged callback. Calling it directly avoids
-        // converting Avalonia's managed delegate thunk to our incompatible delegate type.
         return ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr, int>)handler)(display, errorEvent);
     }
 
