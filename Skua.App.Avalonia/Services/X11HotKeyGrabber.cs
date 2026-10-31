@@ -374,10 +374,9 @@ internal sealed class X11HotKeyGrabber : IDisposable
     }
 
     // Xlib's default error handler ends the process, and a grab another program already holds fails with BadAccess.
-    // Errors on our own connection are ignored; any other goes to the handler that was there before (Avalonia's).
+    // Errors are consumed here so asynchronous X11 teardown errors cannot terminate the process.
     private static readonly HashSet<IntPtr> s_ownDisplays = [];
     private static XErrorHandler? s_errorHandler;
-    private static IntPtr s_previousErrorHandler;
 
     private static void InstallErrorHandler()
     {
@@ -387,7 +386,7 @@ internal sealed class X11HotKeyGrabber : IDisposable
                 return;
 
             s_errorHandler = OnXError;
-            s_previousErrorHandler = XSetErrorHandler(s_errorHandler);
+            XSetErrorHandler(s_errorHandler);
         }
     }
 
@@ -406,9 +405,11 @@ internal sealed class X11HotKeyGrabber : IDisposable
             }
         }
 
-        return s_previousErrorHandler != IntPtr.Zero
-            ? Marshal.GetDelegateForFunctionPointer<XErrorHandler>(s_previousErrorHandler)(display, errorEvent)
-            : 0;
+        // XSetErrorHandler returns a function pointer owned by Avalonia. It may point to a
+        // managed delegate with a different runtime delegate type, so converting it to our
+        // XErrorHandler can throw InvalidCastException during X11 teardown. Xlib error callbacks
+        // cannot safely be forwarded across those managed delegate types; consume the error.
+        return 0;
     }
 
     private const int BadAccess = 10;
