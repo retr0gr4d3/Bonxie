@@ -72,7 +72,7 @@
     -->
     <PropertyGroup>
         <!-- Files named as the skua-mugetsu "Build Mugetsu" workflow's draft release names them. -->
-        <SkuaPlayerVersion>1.6.0-skua.4</SkuaPlayerVersion>
+        <SkuaPlayerVersion>1.6.0-skua.5</SkuaPlayerVersion>
         <SkuaPlayerOs Condition="'$(BonxieWindows)' == 'true'">windows</SkuaPlayerOs>
         <SkuaPlayerOs Condition="'$(BonxieWindows)' != 'true'">linux</SkuaPlayerOs>
         <SkuaPlayerArchive Condition="'$(BonxieWindows)' == 'true'">Mugetsu-$(SkuaPlayerVersion)-windows.zip</SkuaPlayerArchive>
