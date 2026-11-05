@@ -10,7 +10,7 @@ namespace Skua.App.Avalonia.ViewModels.MainMenu;
 public sealed partial class MainViewModel : ObservableObject
 {
     [ObservableProperty]
-    private string _title = "Bonxie Beta";
+    private string _title = "Bonxie Beta 7";
 
     public MainMenuViewModel MainMenu { get; }
 
@@ -21,7 +21,7 @@ public sealed partial class MainViewModel : ObservableObject
     public MainViewModel(MainMenuViewModel mainMenu, IDiscordWebhookService discordWebhookService)
     {
         MainMenu = mainMenu;
-        _title = "Bonxie Beta";
+        _title = "Bonxie Beta 7";
         discordWebhookService.Initialize();
     }
 

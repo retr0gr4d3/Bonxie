@@ -71,7 +71,9 @@ echo.
 echo Next steps:
 echo   1. Push your code to GitHub: git push origin latestreleasereadyimo:main
 echo   2. Go to https://github.com/retr0gr4d3/Bonxie/releases/new
-echo   3. Create tag 'v%VERSION%' and upload the files from Build\Releases\
+echo   3. Create the tag (e.g. b7) and upload EVERY file from Build\Releases\
+echo      The updater needs releases.win.json and the -full.nupkg, not just the zip.
+echo      Bump Version in Directory.Build.props for each release or no update is offered.
 echo ==========================================================
 echo.
 pause

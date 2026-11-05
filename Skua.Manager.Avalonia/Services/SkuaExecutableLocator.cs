@@ -12,7 +12,7 @@ internal static class SkuaExecutableLocator
 
     private static string Resolve()
     {
-        string vibePath = Path.Combine(AppContext.BaseDirectory, "Bonxie.exe");
+        string vibePath = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "Bonxie.exe" : "Bonxie");
         if (File.Exists(vibePath))
             return vibePath;
 

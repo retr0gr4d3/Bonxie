@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'b*'
   workflow_dispatch:
     inputs:
       version:
@@ -20,6 +21,7 @@ jobs:
     runs-on: windows-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
+      tag: ${{ steps.get_version.outputs.tag }}
 
     steps:
       - name: Checkout Source Code
@@ -48,8 +50,11 @@ jobs:
               $ver = $props.Project.PropertyGroup.Version
           }
           if (-not $ver) { $ver = "2.0.0" }
-          Write-Host "Determined Release Version: $ver"
+          # Beta tags (b7) keep their name; the Velopack version comes from Directory.Build.props.
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "v$ver" }
+          Write-Host "Determined Release Version: $ver (tag $tag)"
           "version=$ver" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
 
@@ -76,7 +81,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
-          $tag = "v$ver"
+          $tag = "${{ steps.get_version.outputs.tag }}"
           $files = Get-ChildItem -Path "Build\Releases" -File | ForEach-Object FullName
           if (-not $files) {
               throw "No release artifacts were found in Build\Releases."
@@ -130,10 +135,15 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Install Velopack CLI
+        run: |
+          dotnet tool install -g vpk
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
       - name: Build and package for linux-x64
         run: bash package-linux.sh "${{ needs.build-and-release.outputs.version }}"
 
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "v${{ needs.build-and-release.outputs.version }}" Build/Bonxie-*-linux-x64.tar.gz --clobber
+        run: gh release upload "${{ needs.build-and-release.outputs.tag }}" Build/Bonxie-*-linux-x64.tar.gz Build/Releases-linux/* --clobber

@@ -37,6 +37,14 @@ internal static class Program
             .OnRestarted(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
             .Run();
 
+        // ponytail: named events throw PlatformNotSupportedException off Windows, so Linux allows
+        // several managers. Add a named Mutex + socket wake if that becomes a problem.
+        if (!OperatingSystem.IsWindows())
+        {
+            RunApp(args);
+            return;
+        }
+
         const string eventName = @"Global\Bonxie.Manager.SingleInstance.WakeEvent";
         bool createdNew;
         try

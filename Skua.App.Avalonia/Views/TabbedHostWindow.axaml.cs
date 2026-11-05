@@ -331,7 +331,7 @@ public partial class TabbedHostWindow : Window
         _initialArgs = initialArgs ?? Array.Empty<string>();
         InitializeComponent();
         LoadArmyJumpSettings();
-        Title = "Bonxie Beta";
+        Title = "Bonxie Beta 7";
         MainTitleBar.TitleText = Title;
 
         try

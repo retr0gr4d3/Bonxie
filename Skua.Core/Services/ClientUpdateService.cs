@@ -7,7 +7,11 @@ namespace Skua.Core.Services;
 
 public class ClientUpdateService : IClientUpdateService
 {
-    private const string UpdateRepository = "https://github.com/retr0gr4d3/Bonxie";
+    public const string UpdateRepository = "https://github.com/retr0gr4d3/Bonxie";
+
+    /// <summary>Velopack channel; must match <c>--channel</c> in release.yml / package-linux.sh.</summary>
+    public static string Channel => OperatingSystem.IsWindows() ? "win" : "linux-x64";
+
     private readonly IDialogService _dialogService;
     private readonly ISettingsService _settingsService;
     private UpdateManager? _updateManager;
@@ -111,7 +115,7 @@ public class ClientUpdateService : IClientUpdateService
                 new GithubSource(UpdateRepository, null, true),
                 new UpdateOptions
                 {
-                    ExplicitChannel = "win",
+                    ExplicitChannel = Channel,
                     AllowVersionDowngrade = ClientFileSources.IsNightly
                 });
 
@@ -119,7 +123,7 @@ public class ClientUpdateService : IClientUpdateService
             new GithubSource(UpdateRepository, null, true),
             new UpdateOptions
             {
-                ExplicitChannel = "nightly",
+                ExplicitChannel = OperatingSystem.IsWindows() ? "nightly" : "nightly-linux-x64",
                 AllowVersionDowngrade = true
             });
     }

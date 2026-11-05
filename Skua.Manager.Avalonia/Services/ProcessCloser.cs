@@ -34,6 +34,11 @@ internal static class ProcessCloser
     [DllImport("user32.dll")]
     private static extern int GetWindowTextLength(IntPtr hWnd);
 
+    private const int SIGTERM = 15;
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int kill(int pid, int sig);
+
     [DllImport("user32.dll")]
     private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -43,6 +48,10 @@ internal static class ProcessCloser
     /// </summary>
     public static bool RequestClose(Process process)
     {
+        // Off Windows there is no user32; SIGTERM lets the client run its normal shutdown.
+        if (!OperatingSystem.IsWindows())
+            return kill(process.Id, SIGTERM) == 0;
+
         uint pid = (uint)process.Id;
         bool posted = false;
         EnumWindows((hWnd, _) =>
