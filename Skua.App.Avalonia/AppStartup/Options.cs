@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.DependencyInjection;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
 using Skua.App.Avalonia.ViewModels.Options;
+using Skua.App.Avalonia.Services;
 using Skua.Core.Interfaces;
 using Skua.Core.Interfaces.Services;
 using Skua.Core.Scripts;
@@ -70,6 +71,12 @@ internal class Options
         {
             CreateSettingOptionItem<bool>("Show Username in Title", "Whether to display logged-in character name in window title", "ShowUsernameInTitle"),
             CreateSettingOptionItem<bool>("Save Logs to File", "Append the Script and Debug logs to logs/<account>_<date>.log in the Bonxie folder (repeated lines collapsed, 5 MB per file, kept 14 days)", "LogToFile"),
+            new CommandOptionItemViewModel<bool>("Grandpa Mode", "Larger, easier-to-read text in logs and packet output", "GrandpaMode", new RelayCommand<bool>(enabled =>
+            {
+                ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+                settings.Set("GrandpaMode", enabled);
+                GrandpaModeState.Set(enabled);
+            }), Ioc.Default.GetRequiredService<ISettingsService>().Get<bool>("GrandpaMode")),
             CreateSettingOptionItem<bool>("Auto Update Scripts", "Whether to auto update scripts when launching the Manager or the game client (the client asks first when this is off), needs \"Check for Scripts Updates\" to be true", "AutoUpdateBotScripts"),
             CreateSettingOptionItem<bool>("Check for Script Updates", "Whether to check for scripts updates when launching the Manager or the game client", "CheckBotScriptsUpdates"),
             CreateSettingOptionItem<bool>("Auto Update AdvanceSkill Sets", "Whether to auto update advance skill sets when launching the Manager, needs \"Check for AdvanceSkill Sets updates\" to be true", "AutoUpdateAdvanceSkillSetsUpdates"),

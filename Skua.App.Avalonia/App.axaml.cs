@@ -39,6 +39,8 @@ public partial class App : Application
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
+        // The client's monocle is platinum; the Manager keeps the shared gold default.
+        Skua.Shared.Avalonia.Controls.Shell.WindowTitleBar.SetDefaultIcon("avares://Skua.Shared.Avalonia/Assets/SkuaClientShellImage.png");
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetParent", SetLastError = true)]
@@ -101,6 +103,7 @@ public partial class App : Application
         Skua.App.Avalonia.AppStartup.Services.AddSkuaMainAppViewModels(services);
 
         Ioc.Default.ConfigureServices(services.BuildServiceProvider());
+        GrandpaModeState.Set(Ioc.Default.GetRequiredService<Skua.Core.Interfaces.ISettingsService>().Get<bool>("GrandpaMode"));
 
         Task.Run(() =>
         {
@@ -780,7 +783,7 @@ public partial class App : Application
     {
         try
         {
-            using var stream = AssetLoader.Open(new Uri("avares://Skua.Shared.Avalonia/Assets/SkuaIcon.ico"));
+            using var stream = AssetLoader.Open(new Uri("avares://Skua.Shared.Avalonia/Assets/SkuaClientIcon.ico"));
             var icon = new WindowIcon(stream);
 
             _trayIcon = new TrayIcon

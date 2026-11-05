@@ -228,12 +228,16 @@ public class FlashUtil : IFlashUtil
             _pending[id] = tcs;
             try
             {
+                Stopwatch callTimer = Stopwatch.StartNew();
                 string request = JsonConvert.SerializeObject(new { id, name = function, args = args.Select(ToJs) });
                 lock (_sendLock)
                     writer.WriteLine(request);
 
                 if (!tcs.Task.Wait(CallTimeout))
                     throw new TimeoutException($"No answer from the game player within {CallTimeout.TotalSeconds}s.");
+
+                if (callTimer.ElapsedMilliseconds >= 250)
+                    Trace.WriteLine($"Slow Flash call: {function} took {callTimer.ElapsedMilliseconds} ms.");
             }
             finally
             {

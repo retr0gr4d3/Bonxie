@@ -227,6 +227,7 @@ public partial class MainWindow : Window
                 "Junk Items" => MaterialIconKind.DeleteSweepOutline,
                 "Skills" => MaterialIconKind.LightningBoltOutline,
                 "Stats" => MaterialIconKind.ChartLine,
+                "Notification Center" => MaterialIconKind.BellOutline,
                 "Runtime" => MaterialIconKind.PlayNetworkOutline,
                 "Logs" => MaterialIconKind.FileDocumentOutline,
                 "Console" => MaterialIconKind.Console,
@@ -404,6 +405,8 @@ public partial class MainWindow : Window
             _isFlashLoaded = true;
             Dispatcher.UIThread.Post(() =>
             {
+                // Hiding alone leaves the indeterminate animation running at the monitor's refresh rate.
+                LoadingBar.IsIndeterminate = false;
                 LoadingBar.IsVisible = false;
                 FlashHost.IsVisible = !_options.HeadlessMode;
                 HeadlessOverlay.IsVisible = _options.HeadlessMode;
