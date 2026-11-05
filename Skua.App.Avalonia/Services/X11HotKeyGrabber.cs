@@ -374,7 +374,7 @@ internal sealed class X11HotKeyGrabber : IDisposable
     }
 
     // Xlib's default error handler ends the process, and a grab another program already holds fails with BadAccess.
-    // Errors on our own connection are ignored; any other goes to the handler that was there before (Avalonia's).
+    // Errors on our own connection are handled here; other errors go back to Avalonia's handler.
     private static readonly HashSet<IntPtr> s_ownDisplays = [];
     private static XErrorHandler? s_errorHandler;
     private static IntPtr s_previousErrorHandler;
@@ -407,8 +407,13 @@ internal sealed class X11HotKeyGrabber : IDisposable
         }
 
         return s_previousErrorHandler != IntPtr.Zero
-            ? Marshal.GetDelegateForFunctionPointer<XErrorHandler>(s_previousErrorHandler)(display, errorEvent)
+            ? CallErrorHandler(s_previousErrorHandler, display, errorEvent)
             : 0;
+    }
+
+    private static unsafe int CallErrorHandler(IntPtr handler, IntPtr display, IntPtr errorEvent)
+    {
+        return ((delegate* unmanaged[Cdecl]<IntPtr, IntPtr, int>)handler)(display, errorEvent);
     }
 
     private const int BadAccess = 10;
