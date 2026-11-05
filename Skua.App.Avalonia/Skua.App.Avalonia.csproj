@@ -73,10 +73,13 @@
     <PropertyGroup>
         <!-- Files named as the skua-mugetsu "Build Mugetsu" workflow's draft release names them. -->
         <SkuaPlayerVersion>1.6.0-skua.5</SkuaPlayerVersion>
+        <!-- The skua.5 release names its files without the Mugetsu-<version>- prefix (windows.zip, linux.tar.gz).
+             For a release made by the Build Mugetsu workflow, set this to Mugetsu-$(SkuaPlayerVersion)-. -->
+        <SkuaPlayerAssetPrefix></SkuaPlayerAssetPrefix>
         <SkuaPlayerOs Condition="'$(BonxieWindows)' == 'true'">windows</SkuaPlayerOs>
         <SkuaPlayerOs Condition="'$(BonxieWindows)' != 'true'">linux</SkuaPlayerOs>
-        <SkuaPlayerArchive Condition="'$(BonxieWindows)' == 'true'">Mugetsu-$(SkuaPlayerVersion)-windows.zip</SkuaPlayerArchive>
-        <SkuaPlayerArchive Condition="'$(BonxieWindows)' != 'true'">Mugetsu-$(SkuaPlayerVersion)-linux.tar.gz</SkuaPlayerArchive>
+        <SkuaPlayerArchive Condition="'$(BonxieWindows)' == 'true'">$(SkuaPlayerAssetPrefix)windows.zip</SkuaPlayerArchive>
+        <SkuaPlayerArchive Condition="'$(BonxieWindows)' != 'true'">$(SkuaPlayerAssetPrefix)linux.tar.gz</SkuaPlayerArchive>
         <SkuaPlayerExe Condition="'$(BonxieWindows)' == 'true'">Mugetsu.exe</SkuaPlayerExe>
         <SkuaPlayerExe Condition="'$(BonxieWindows)' != 'true'">Mugetsu</SkuaPlayerExe>
         <SkuaPlayerUrl>https://github.com/retr0gr4d3/skua-mugetsu/releases/download/v$(SkuaPlayerVersion)/$(SkuaPlayerArchive)</SkuaPlayerUrl>
@@ -86,8 +89,8 @@
 
         <!-- The x86-64-v2 build for CPUs without AVX2, copied to player-x86-64-v2\; Bonxie picks it at startup when
              the CPU lacks AVX2. Releases before it existed don't have it: the build then warns and ships only player\. -->
-        <SkuaPlayerAvxArchive Condition="'$(BonxieWindows)' == 'true'">Mugetsu-$(SkuaPlayerVersion)-windows-x86-64-v2.zip</SkuaPlayerAvxArchive>
-        <SkuaPlayerAvxArchive Condition="'$(BonxieWindows)' != 'true'">Mugetsu-$(SkuaPlayerVersion)-linux-x86-64-v2.tar.gz</SkuaPlayerAvxArchive>
+        <SkuaPlayerAvxArchive Condition="'$(BonxieWindows)' == 'true'">$(SkuaPlayerAssetPrefix)windows-x86-64-v2.zip</SkuaPlayerAvxArchive>
+        <SkuaPlayerAvxArchive Condition="'$(BonxieWindows)' != 'true'">$(SkuaPlayerAssetPrefix)linux-x86-64-v2.tar.gz</SkuaPlayerAvxArchive>
         <SkuaPlayerAvxUrl>https://github.com/retr0gr4d3/skua-mugetsu/releases/download/v$(SkuaPlayerVersion)/$(SkuaPlayerAvxArchive)</SkuaPlayerAvxUrl>
         <SkuaPlayerAvxCache>$(SkuaPlayerCache)-x86-64-v2</SkuaPlayerAvxCache>
         <SkuaPlayerAvxDir>$(SkuaPlayerAvxCache)\Mugetsu</SkuaPlayerAvxDir>
