@@ -6,6 +6,7 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Styling;
 using Material.Icons;
 using Material.Icons.Avalonia;
 using System;
@@ -18,7 +19,9 @@ public partial class WindowTitleBar : UserControl
         AvaloniaProperty.Register<WindowTitleBar, string>(nameof(TitleText), "Bonxie");
 
     private static readonly Uri BuiltInIconUri = new("avares://Skua.Shared.Avalonia/Assets/SkuaShellImage.png");
+    private static readonly Uri LightThemeIconUri = new("avares://Skua.Shared.Avalonia/Assets/SkuaShellImageLightTheme.png");
     private static IImage? _defaultIconSource;
+    private static IImage? _lightThemeIconSource;
     private static string? _artworkPath;
     private Bitmap? _artworkBitmap;
     private bool _usesInstanceArtwork;
@@ -82,7 +85,8 @@ public partial class WindowTitleBar : UserControl
     public WindowTitleBar()
     {
         InitializeComponent();
-        SetCurrentValue(IconSourceProperty, _defaultIconSource ??= LoadIcon(BuiltInIconUri));
+        ApplyThemeIcon();
+        ActualThemeVariantChanged += (_, _) => ApplyThemeIcon();
         PropertyChanged += (_, e) =>
         {
             if (e.Property == UseAccentBackgroundProperty)
@@ -139,6 +143,16 @@ public partial class WindowTitleBar : UserControl
             Height = 12
         };
         ToolTip.SetTip(MaximizeButton, maximized ? "Restore" : "Maximize");
+    }
+
+    /// <summary>White bird on dark themes, dark bird on light ones (the badge behind it is near-white there).</summary>
+    private void ApplyThemeIcon()
+    {
+        IImage dark = _defaultIconSource ??= LoadIcon(BuiltInIconUri);
+        IImage light = _lightThemeIconSource ??= LoadIcon(LightThemeIconUri);
+        if (IconSource is not null && IconSource != dark && IconSource != light)
+            return; // a caller set its own icon
+        SetCurrentValue(IconSourceProperty, ActualThemeVariant == ThemeVariant.Light ? light : dark);
     }
 
     private void ApplyAccentForeground()

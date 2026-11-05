@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 28 216 216" width="256" height="256">
+  <title>Bonxie</title>
+  <defs>
+    <!-- wing flashes punched out so they show whatever's behind -->
+    <mask id="flash">
+      <rect x="0" y="0" width="256" height="256" fill="#fff"/>
+      <path d="M56 110 Q66 104 76 102 L78 107 Q68 109 60 115 Z" fill="#000"/>
+      <path d="M200 110 Q190 104 180 102 L178 107 Q188 109 196 115 Z" fill="#000"/>
+    </mask>
+  </defs>
+
+  <!-- skua in flight, top-down -->
+  <g fill="#202020" mask="url(#flash)">
+    <path d="M118 124 Q100 102 82 98 Q56 102 28 124 Q62 120 82 130 Q102 142 118 150 Z"/>
+    <path d="M138 124 Q156 102 174 98 Q200 102 228 124 Q194 120 174 130 Q154 142 138 150 Z"/>
+    <ellipse cx="128" cy="134" rx="15" ry="34"/>
+    <path d="M117 158 L128 198 L139 158 Z"/>
+    <circle cx="128" cy="97" r="12"/>
+    <path d="M124 87 Q128 74 133 80 Q130 82 132 87 Z"/>
+  </g>
+</svg>
