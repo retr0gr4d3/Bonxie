@@ -210,18 +210,28 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
     /// Whether this account can't log into <paramref name="server"/> because it is full. The public API list
     /// (<see cref="CachedServers"/>) reports the free-player cap, and members can still log into a server at that
     /// cap: the in-game list shows the member cap instead (e.g. Artix 1502/2500 while the API says 1500/1500).
-    /// So a server only known from the API counts as full for non-members only. Before login the membership is
-    /// unknown and <see cref="IsNonMemberAccount"/> returns false, so the server is tried; if the login is refused,
-    /// the usual retry/fallback picks another one.
+    /// When the in-game list has the server, its entry decides. A server only known from the API counts as full
+    /// for non-members only. Before login the membership is unknown and <see cref="IsNonMemberAccount"/> returns
+    /// false, so the server is tried; a refused login fills in objLogin, so the next attempt sees the account as a
+    /// non-member and skips it.
     /// </summary>
     private bool IsFullForAccount(Server server, bool isNonMemberAccount)
     {
+        // The caller may hand us the API entry of a server the in-game list also has; use the in-game cap then.
+        Server? inGameEntry = ServerList.Find(x => HasSameName(x, server));
+        if (inGameEntry is not null)
+            return IsServerFull(inGameEntry);
+
         if (!IsServerFull(server))
             return false;
 
-        bool inGameListed = ServerList.Exists(x => string.Equals(x.Name, server.Name, StringComparison.OrdinalIgnoreCase));
-        bool onlyFromPublicApi = !inGameListed && CachedServers.Contains(server);
-        return !onlyFromPublicApi || isNonMemberAccount;
+        bool fromPublicApi = CachedServers.Exists(x => HasSameName(x, server));
+        return !fromPublicApi || isNonMemberAccount;
+    }
+
+    private static bool HasSameName(Server a, Server b)
+    {
+        return string.Equals(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsNonMemberAccount()
