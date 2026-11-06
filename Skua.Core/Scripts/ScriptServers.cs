@@ -206,6 +206,24 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
         return server.MaxPlayers > 0 && server.PlayerCount >= server.MaxPlayers;
     }
 
+    /// <summary>
+    /// Whether this account can't log into <paramref name="server"/> because it is full. The public API list
+    /// (<see cref="CachedServers"/>) reports the free-player cap, and members can still log into a server at that
+    /// cap: the in-game list shows the member cap instead (e.g. Artix 1502/2500 while the API says 1500/1500).
+    /// So a server only known from the API counts as full for non-members only. Before login the membership is
+    /// unknown and <see cref="IsNonMemberAccount"/> returns false, so the server is tried; if the login is refused,
+    /// the usual retry/fallback picks another one.
+    /// </summary>
+    private bool IsFullForAccount(Server server, bool isNonMemberAccount)
+    {
+        if (!IsServerFull(server))
+            return false;
+
+        bool inGameListed = ServerList.Exists(x => string.Equals(x.Name, server.Name, StringComparison.OrdinalIgnoreCase));
+        bool onlyFromPublicApi = !inGameListed && CachedServers.Contains(server);
+        return !onlyFromPublicApi || isNonMemberAccount;
+    }
+
     private bool IsNonMemberAccount()
     {
         int loginUpgradeDays = Flash.GetGameObjectStatic<int>("objLogin.iUpgDays", int.MinValue);
@@ -219,7 +237,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
         return false;
     }
 
-    private static bool IsServerBlacklistedForRelogin(Server server, bool isNonMemberAccount)
+    private bool IsServerBlacklistedForRelogin(Server server, bool isNonMemberAccount)
     {
         if (!IsValidReloginServerData(server))
             return true;
@@ -227,7 +245,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
         bool memberOnly = server.Upgrade && isNonMemberAccount;
         return !server.Online
             || serverName.Contains("Test", StringComparison.OrdinalIgnoreCase)
-            || IsServerFull(server)
+            || IsFullForAccount(server, isNonMemberAccount)
             || memberOnly;
     }
 
@@ -239,7 +257,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
             return "offline";
         if ((server.Name ?? string.Empty).Contains("Test", StringComparison.OrdinalIgnoreCase))
             return "test server";
-        if (IsServerFull(server))
+        if (IsFullForAccount(server, IsNonMemberAccount()))
             return "full";
         if (server.Upgrade && IsNonMemberAccount())
             return "member-only";
