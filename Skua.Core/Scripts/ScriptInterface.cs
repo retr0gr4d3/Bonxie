@@ -542,11 +542,9 @@ public class ScriptInterface : IScriptInterface, IScriptInterfaceManager, IDispo
                 {
                     try
                     {
-                        Process.Start(new ProcessStartInfo
-                        {
-                            FileName = url,
-                            UseShellExecute = true
-                        });
+                        // The address comes from game content, so only web pages are opened.
+                        if (!Skua.Core.Utils.Link.OpenBrowser(url))
+                            Log($"Refused to open '{url}': not a web address.");
                     }
                     catch (Exception ex)
                     {

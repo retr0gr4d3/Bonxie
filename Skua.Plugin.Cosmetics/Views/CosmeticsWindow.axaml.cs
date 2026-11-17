@@ -471,7 +471,7 @@ public partial class CosmeticsWindow : Window
     {
         if (_selectedItem != null)
         {
-            string url = $"http://aqwwiki.wikidot.com/{Uri.EscapeDataString(_selectedItem.Name)}";
+            string url = $"https://aqwwiki.wikidot.com/{Uri.EscapeDataString(_selectedItem.Name)}";
             try
             {
                 Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });

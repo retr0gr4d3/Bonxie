@@ -108,6 +108,10 @@ public class FlashUtil : IFlashUtil
         catch { /* already gone */ }
         _player?.Dispose();
         _player = null;
+
+        // Free the bridge at once so the next player can connect; its socket may not have closed yet.
+        Interlocked.Exchange(ref _bridge, null)?.Dispose();
+        FailPending();
     }
 
     private async Task AcceptLoopAsync()
@@ -134,9 +138,13 @@ public class FlashUtil : IFlashUtil
             client.NoDelay = true;
             NetworkStream stream = client.GetStream();
             StreamWriter writer = new(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
-            // A restarted player connects anew; whatever the old one still owed will never come.
-            Interlocked.Exchange(ref _bridge, writer)?.Dispose();
-            FailPending();
+            // One player, one bridge. Anything else that finds the port while the player is connected is turned away
+            // instead of replacing it: the bridge carries logins and can make the client act.
+            if (Interlocked.CompareExchange(ref _bridge, writer, null) is not null)
+            {
+                Trace.WriteLine("Refused a second connection to the game player bridge.");
+                return;
+            }
 
             try
             {
@@ -342,7 +350,5 @@ public class FlashUtil : IFlashUtil
         StopPlayer();
         _listener?.Stop();
         _listener = null;
-        _bridge?.Dispose();
-        FailPending();
     }
 }

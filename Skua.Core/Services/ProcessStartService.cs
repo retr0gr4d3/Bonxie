@@ -19,12 +19,7 @@ public class ProcessStartService : IProcessService
 
     public void OpenLink(string link)
     {
-        ProcessStartInfo ps = new(link)
-        {
-            UseShellExecute = true,
-            Verb = "open"
-        };
-        Process.Start(ps);
+        Skua.Core.Utils.Link.OpenBrowser(link);
     }
 
     public void OpenVSC()
