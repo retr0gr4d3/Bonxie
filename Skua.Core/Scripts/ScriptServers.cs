@@ -154,8 +154,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
 
         try
         {
-            string response = await ValidatedHttpExtensions.GetStringAsync(HttpClients.GetGHClient()
-, $"http://content.aq.com/game/api/data/servers")
+            string response = await ValidatedHttpExtensions.GetStringAsync(HttpClients.GetAQContent, "https://content.aq.com/game/api/data/servers")
                 .ConfigureAwait(false);
 
             List<Server>? servers = JsonConvert.DeserializeObject<List<Server>>(response);

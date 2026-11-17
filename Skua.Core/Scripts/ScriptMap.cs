@@ -217,10 +217,26 @@ public partial class ScriptMap : IScriptMap
     private readonly string _cachePath = Path.Combine(ClientFileSources.SkuaDIR, "cache");
     private readonly string _savedCacheFilePath = Path.Combine(ClientFileSources.SkuaDIR, "cache", "0SavedMaps.json");
 
+    /// <summary>True for plain SWF file names: letters, digits, spaces, dots, dashes and underscores only.</summary>
+    public static bool IsSafeMapFileName(string? fileName)
+    {
+        return !string.IsNullOrEmpty(fileName)
+            && fileName.EndsWith(".swf", StringComparison.OrdinalIgnoreCase)
+            && !fileName.Contains("..", StringComparison.Ordinal)
+            && fileName.All(c => char.IsAsciiLetterOrDigit(c) || c is ' ' or '.' or '-' or '_');
+    }
+
     public List<MapItem>? FindMapItems(bool forceRefresh = false)
     {
         if (string.IsNullOrEmpty(FilePath))
             return null;
+
+        // The name comes from the game server and ends up in a cmd.exe command line and a file path below.
+        if (!IsSafeMapFileName(FileName))
+        {
+            Trace.WriteLine($"Refused to decompile map file with an unexpected name: '{FileName}'.");
+            return null;
+        }
 
         if (!Directory.Exists(_cachePath))
             Directory.CreateDirectory(_cachePath);
@@ -384,7 +400,6 @@ public partial class ScriptMap : IScriptMap
         bool DecompileSWF(string fileName)
         {
             sw.Restart();
-            fileName = fileName.EndsWith(".swf") ? fileName : fileName + ".swf";
             Process decompile = new()
             {
                 StartInfo = new ProcessStartInfo
