@@ -27,7 +27,7 @@ public sealed class SkuaStartupHandler : IDisposable
         _bot = bot;
         _settingsService = settingsService;
         _themeService = themeService;
-        (_optionsParsed, _options) = StartupOptions.Parse(Environment.GetCommandLineArgs());
+        (_optionsParsed, _options) = StartupOptions.Parse(Skua.Core.Utils.StartupSecrets.CommandLine);
     }
 
     public void Execute()

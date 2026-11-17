@@ -883,44 +883,17 @@ public partial class ArmyQueueViewModel : ObservableRecipient
     {
         try
         {
-            string exePath = SkuaExecutableLocator.ExecutablePath;
-            string server = _settingsService.Get("LastServer", "Twilly");
-
-            ProcessStartInfo psi = new(exePath)
+            Process? process = new ClientLaunch
             {
-                WorkingDirectory = SkuaExecutableLocator.WorkingDirectory,
-                ArgumentList =
-                {
-                    "-u",
-                    acc.Username,
-                    "-p",
-                    acc.Password,
-                    "-s",
-                    server
-                }
-            };
-
-            if (_settingsService.Get("syncTheme", false))
-            {
-                psi.ArgumentList.Add("--use-theme");
-                psi.ArgumentList.Add(_settingsService.Get("CurrentTheme", "no-theme"));
-            }
-
-            if (!string.IsNullOrWhiteSpace(scriptPath))
-            {
-                psi.ArgumentList.Add("--run-script");
-                psi.ArgumentList.Add(scriptPath);
-
-                if (!string.IsNullOrWhiteSpace(optionsStorage))
-                {
-                    psi.ArgumentList.Add("--script-options-storage");
-                    psi.ArgumentList.Add(optionsStorage);
-                }
-            }
-
-            psi.ArgumentList.Add("--exit-on-script-stop");
-
-            Process? process = Process.Start(psi);
+                Username = acc.Username,
+                Password = acc.Password,
+                Server = _settingsService.Get("LastServer", "Twilly"),
+                Theme = _settingsService.Get("syncTheme", false) ? _settingsService.Get("CurrentTheme", "no-theme") : null,
+                ScriptPath = scriptPath,
+                RunScript = true,
+                ScriptOptionsStorage = optionsStorage,
+                ExitOnScriptStop = true
+            }.Start();
             if (process != null)
             {
                 StrongReferenceMessenger.Default.Send(new AddProcessMessage(process, acc.DisplayOrUsername));

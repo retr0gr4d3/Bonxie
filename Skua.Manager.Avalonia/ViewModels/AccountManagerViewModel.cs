@@ -61,7 +61,6 @@ public sealed partial class AccountManagerViewModel : BotControlViewModelBase
         SetupSettingsWatcher();
     }
 
-    private readonly string _exePath = SkuaExecutableLocator.ExecutablePath;
     private readonly ISettingsService _settingsService;
     private readonly IDialogService _dialogService;
     private readonly IFileDialogService _fileService;
@@ -440,44 +439,16 @@ public sealed partial class AccountManagerViewModel : BotControlViewModelBase
     {
         try
         {
-            ProcessStartInfo psi = new(_exePath)
+            Process? process = new ClientLaunch
             {
-                ArgumentList =
-                {
-                    "-u",
-                    username,
-                    "-p",
-                    password,
-                    "-s",
-                    SelectedServer?.Name ?? "Twilly"
-                },
-                WorkingDirectory = SkuaExecutableLocator.WorkingDirectory
-            };
-
-            if (!string.IsNullOrWhiteSpace(hostInstanceId))
-            {
-                psi.ArgumentList.Add("--host-instance");
-                psi.ArgumentList.Add(hostInstanceId);
-            }
-            if (_syncThemes)
-            {
-                psi.ArgumentList.Add("--use-theme");
-                psi.ArgumentList.Add(_settingsService.Get("CurrentTheme", "no-theme"));
-            }
-
-            bool shouldUseScript = withScript ?? StartWithScript;
-            if (shouldUseScript && !string.IsNullOrEmpty(ScriptPath))
-            {
-                psi.ArgumentList.Add("--run-script");
-                psi.ArgumentList.Add(ScriptPath);
-            }
-            else if (!string.IsNullOrEmpty(ScriptPath))
-            {
-                psi.ArgumentList.Add("--load-script");
-                psi.ArgumentList.Add(ScriptPath);
-            }
-
-            Process? process = Process.Start(psi);
+                Username = username,
+                Password = password,
+                Server = SelectedServer?.Name ?? "Twilly",
+                HostInstanceId = hostInstanceId,
+                Theme = _syncThemes ? _settingsService.Get("CurrentTheme", "no-theme") : null,
+                ScriptPath = ScriptPath,
+                RunScript = withScript ?? StartWithScript
+            }.Start();
             if (process != null)
             {
                 string accountName = !string.IsNullOrWhiteSpace(displayName) ? displayName : username;

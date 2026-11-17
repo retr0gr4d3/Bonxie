@@ -124,7 +124,8 @@ public partial class App : Application
         themeService.SchemeChanged += OnSchemeChanged;
         ApplyThemeFromService(themeService);
 
-        string[] args = Environment.GetCommandLineArgs();
+        // Includes the password/token this process was handed in its environment (see StartupSecrets).
+        string[] args = Skua.Core.Utils.StartupSecrets.CommandLine;
         bool hasEmbedFlag = false;
         long embedHwnd = 0;
         int hostPid = 0;

@@ -2754,7 +2754,8 @@ public partial class TabbedHostWindow : Window
                 p.StartInfo.ArgumentList.Add(App.HostInstanceId);
             }
 
-            foreach (string arg in clientArgs)
+            // The password and token go to the tab's process in its environment, not on its command line.
+            foreach (string arg in Skua.Core.Utils.StartupSecrets.MoveToEnvironment(clientArgs, p.StartInfo.Environment))
             {
                 if (!string.IsNullOrEmpty(arg))
                     p.StartInfo.ArgumentList.Add(arg);
