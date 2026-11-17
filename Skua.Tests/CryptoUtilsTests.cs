@@ -59,8 +59,10 @@ public sealed class CryptoUtilsTests : IDisposable
     public void Tampered_text_decrypts_to_nothing()
     {
         string sealedText = CryptoUtils.Encrypt("secret");
-        char swapped = sealedText[^3] == 'A' ? 'B' : 'A';
-        string tampered = sealedText[..^3] + swapped + sealedText[^2..];
+        // Change a character well inside the text: the last ones before the padding carry unused bits.
+        int at = sealedText.Length / 2;
+        char swapped = sealedText[at] == 'A' ? 'B' : 'A';
+        string tampered = sealedText[..at] + swapped + sealedText[(at + 1)..];
 
         Assert.Equal(string.Empty, CryptoUtils.Decrypt(tampered));
     }
