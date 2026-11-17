@@ -152,47 +152,40 @@ public class DiscordWebhookService : IDiscordWebhookService, IDisposable
             EnqueueAction(async () => await SendEmbedAsync("Script Started", $"**{GetBotName()}** has begun execution of **{scriptName}**.", 0x00FF00)); // Green
         }
 
-        // Send an initial dashboard snapshot to Skua Nexus if configured
-        if (settings != null && !string.IsNullOrWhiteSpace(settings.NexusWebhookUrl))
-        {
-            EnqueueAction(async () =>
-            {
-                List<object> fields = BuildDashboardSnapshotFields();
-                await SendEmbedToUrlAsync(settings.NexusWebhookUrl.Trim(), "Health Ping", $"**{GetBotName()}** is running.", 0x808080, fields);
-            });
-        }
-        else if (settings != null && settings.WebhookNotifyHealthPing && !string.IsNullOrWhiteSpace(settings.DiscordWebhookUrl))
-        {
-            // Only send initial Health Ping to Discord if user explicitly enabled Health Pings
-            EnqueueAction(async () =>
-            {
-                List<object> fields = BuildDashboardSnapshotFields();
-                await SendEmbedToUrlAsync(settings.DiscordWebhookUrl.Trim(), "Health Ping", $"**{GetBotName()}** is running.", 0x808080, fields);
-            });
-        }
+        // The first dashboard snapshot goes to Skua Nexus when it is set up; Discord gets one only when the user
+        // turned Health Pings on.
+        if (!EnqueueHealthPing(settings?.NexusWebhookUrl, "is running.") && settings is { WebhookNotifyHealthPing: true })
+            EnqueueHealthPing(settings.DiscordWebhookUrl, "is running.");
 
         StartPingTimer();
+    }
+
+    /// <summary>Queues a "Health Ping" embed with the dashboard snapshot for <paramref name="url"/>.</summary>
+    /// <returns>False when <paramref name="url"/> is not set, so nothing was queued.</returns>
+    private bool EnqueueHealthPing(string? url, string status, int color = 0x808080)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return false;
+
+        string target = url.Trim();
+        EnqueueAction(() => SendEmbedToUrlAsync(target, "Health Ping", $"**{GetBotName()}** {status}", color, BuildDashboardSnapshotFields()));
+        return true;
     }
 
     private void OnScriptStopped(ScriptStoppedMessage msg)
     {
         var settings = _settingsService.GetClient();
-        if (settings == null || !settings.WebhookNotifyStopped || SuppressDefaultNotifications)
-        {
-            _scriptStartTime = null;
-            StopPingTimer();
+        if (settings is { WebhookNotifyStopped: true } && !SuppressDefaultNotifications)
+            EnqueueSessionSummary();
 
-            if (settings != null && !string.IsNullOrWhiteSpace(settings.NexusWebhookUrl))
-            {
-                EnqueueAction(async () =>
-                {
-                    List<object> fields = BuildDashboardSnapshotFields();
-                    await SendEmbedToUrlAsync(settings.NexusWebhookUrl.Trim(), "Health Ping", $"**{GetBotName()}** has stopped.", 0x808080, fields);
-                });
-            }
-            return;
-        }
+        EnqueueHealthPing(settings?.NexusWebhookUrl, "has stopped.");
 
+        _scriptStartTime = null;
+        StopPingTimer();
+    }
+
+    private void EnqueueSessionSummary()
+    {
         var bot = _serviceProvider.GetService<IScriptInterface>();
         if (bot != null && bot.Player.Playing)
         {
@@ -219,18 +212,6 @@ public class DiscordWebhookService : IDiscordWebhookService, IDisposable
                 EnqueueAction(async () => await SendEmbedAsync("Farming Session Concluded", $"**{botName}** has stopped execution of **{scriptName}**.", 0xFF0000, fields));
             }
         }
-
-        if (!string.IsNullOrWhiteSpace(settings.NexusWebhookUrl))
-        {
-            EnqueueAction(async () =>
-            {
-                List<object> fields = BuildDashboardSnapshotFields();
-                await SendEmbedToUrlAsync(settings.NexusWebhookUrl.Trim(), "Health Ping", $"**{GetBotName()}** has stopped.", 0x808080, fields);
-            });
-        }
-
-        _scriptStartTime = null;
-        StopPingTimer();
     }
 
     private void OnScriptError(ScriptErrorMessage msg)
@@ -249,14 +230,7 @@ public class DiscordWebhookService : IDiscordWebhookService, IDisposable
             EnqueueAction(async () => await SendEmbedAsync("Script Error", $"**{GetBotName()}** crashed unexpectedly.", 0xFF0000, fields)); // Red
         }
 
-        if (settings != null && !string.IsNullOrWhiteSpace(settings.NexusWebhookUrl))
-        {
-            EnqueueAction(async () =>
-            {
-                List<object> fields = BuildDashboardSnapshotFields();
-                await SendEmbedToUrlAsync(settings.NexusWebhookUrl.Trim(), "Health Ping", $"**{GetBotName()}** crashed.", 0xFF0000, fields);
-            });
-        }
+        EnqueueHealthPing(settings?.NexusWebhookUrl, "crashed.", 0xFF0000);
 
         StopPingTimer();
     }
@@ -317,20 +291,9 @@ public class DiscordWebhookService : IDiscordWebhookService, IDisposable
             return;
         }
 
-        EnqueueAction(async () =>
-        {
-            List<object> fields = BuildDashboardSnapshotFields();
-
-            if (sendDiscord && !string.IsNullOrWhiteSpace(settings.DiscordWebhookUrl))
-            {
-                await SendEmbedToUrlAsync(settings.DiscordWebhookUrl.Trim(), "Health Ping", $"**{GetBotName()}** is running flawlessly.", 0x808080, fields);
-            }
-
-            if (hasNexus && !string.IsNullOrWhiteSpace(settings.NexusWebhookUrl))
-            {
-                await SendEmbedToUrlAsync(settings.NexusWebhookUrl.Trim(), "Health Ping", $"**{GetBotName()}** is running flawlessly.", 0x808080, fields);
-            }
-        });
+        if (sendDiscord)
+            EnqueueHealthPing(settings.DiscordWebhookUrl, "is running flawlessly.");
+        EnqueueHealthPing(settings.NexusWebhookUrl, "is running flawlessly.");
     }
 
     /// <summary>
@@ -510,28 +473,32 @@ public class DiscordWebhookService : IDiscordWebhookService, IDisposable
         }
     }
 
-    private async Task PostJsonToUrlAsync(string url, string json)
+    private Task PostJsonToUrlAsync(string url, string json)
+    {
+        return PostWithRetryAsync(url, () => new StringContent(json, Encoding.UTF8, "application/json"));
+    }
+
+    /// <summary>
+    /// Posts to a webhook, trying up to three times while it answers 429 (rate limited). Any other answer, good or
+    /// bad, ends it; a webhook that can't be reached is logged and never stops the bot.
+    /// </summary>
+    private async Task PostWithRetryAsync(string url, Func<HttpContent> createContent)
     {
         try
         {
             for (int attempt = 0; attempt < 3; attempt++)
             {
-                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using HttpContent content = createContent();
                 using var response = await _httpClient.PostAsync(url, content);
-                if (response.IsSuccessStatusCode)
+                if ((int)response.StatusCode != 429)
                     break;
 
-                if ((int)response.StatusCode == 429)
-                {
-                    await Task.Delay(1500 * (attempt + 1));
-                    continue;
-                }
-                break;
+                await Task.Delay(1500 * (attempt + 1));
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Trace.WriteLine($"Webhook PostJsonToUrlAsync failed for {url}: {ex.Message}");
+            System.Diagnostics.Trace.WriteLine($"Webhook post failed: {ex.Message}");
         }
     }
 
@@ -550,38 +517,22 @@ public class DiscordWebhookService : IDiscordWebhookService, IDisposable
         await PostJsonToUrlAsync(url, json);
     }
 
-    private async Task PostMultipartToUrlAsync(string url, string payloadJson, byte[]? screenshotBytes)
+    private Task PostMultipartToUrlAsync(string url, string payloadJson, byte[]? screenshotBytes)
     {
-        try
+        return PostWithRetryAsync(url, () =>
         {
-            for (int attempt = 0; attempt < 3; attempt++)
+            var formData = new MultipartFormDataContent();
+            formData.Add(new StringContent(payloadJson), "payload_json");
+
+            if (screenshotBytes != null && screenshotBytes.Length > 0)
             {
-                using var formData = new MultipartFormDataContent();
-                formData.Add(new StringContent(payloadJson), "payload_json");
-
-                if (screenshotBytes != null && screenshotBytes.Length > 0)
-                {
-                    var imageContent = new ByteArrayContent(screenshotBytes);
-                    imageContent.Headers.ContentType = new MediaTypeHeaderValue("image/png");
-                    formData.Add(imageContent, "file", "screenshot.png");
-                }
-
-                using var response = await _httpClient.PostAsync(url, formData);
-                if (response.IsSuccessStatusCode)
-                    break;
-
-                if ((int)response.StatusCode == 429)
-                {
-                    await Task.Delay(1500 * (attempt + 1));
-                    continue;
-                }
-                break;
+                var imageContent = new ByteArrayContent(screenshotBytes);
+                imageContent.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+                formData.Add(imageContent, "file", "screenshot.png");
             }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Trace.WriteLine($"Webhook PostMultipartToUrlAsync failed for {url}: {ex.Message}");
-        }
+
+            return formData;
+        });
     }
 
     private void OnItemDropped(ItemDroppedMessage msg)
