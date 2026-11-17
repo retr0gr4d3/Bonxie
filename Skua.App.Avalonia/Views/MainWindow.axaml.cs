@@ -21,6 +21,7 @@ using Skua.Core.Interfaces.ViewModels;
 using System.Threading.Tasks;
 using System.Text.Json;
 using Skua.Core.AppStartup;
+using static Skua.App.Avalonia.Services.TabHostMessages;
 
 #if IS_WINDOWS
 using Avalonia.Input;
@@ -71,24 +72,10 @@ public partial class MainWindow : Window
     private const int WM_WINDOWPOSCHANGED = 0x0047;
     private const int WM_DPICHANGED = 0x02E0;
     private const int WM_GETDPISCALEDSIZE = 0x02E4;
-    private const int WM_SKUA_CHILD_DPICHANGED = 0x0400 + 441;
 
     private SubclassProc? _subclassProc;
     private bool _scalingCheckQueued;
 #endif
-    private const int WM_SKUA_JUMP_MAP = 0x0400 + 449;
-    private const int WM_SKUA_SET_OPTION = 0x0400 + 450;
-    private const int WM_SKUA_LOAD_SCRIPT = 0x0400 + 453;
-    private const int WM_SKUA_ARMY_SCHEDULER = 0x0400 + 454;
-    private const int WM_SKUA_ARMY_SCHEDULER_STOP = 0x0400 + 455;
-    private const int WM_SKUA_CHECK_LOGIN = 0x0400 + 456;
-    private const int WM_SKUA_JUMP_PLAYER = 0x0400 + 457;
-    private const int WM_SKUA_JUMP_HOUSE = 0x0400 + 464;
-    private const int WM_SKUA_LOGIN = 0x0400 + 447;
-    private const int WM_SKUA_GRIDVIEW = 0x0400 + 444;
-    private const int WM_SKUA_AUTO_ATTACK = 0x0400 + 459;
-    private const int WM_SKUA_OPEN_BANK = 0x0400 + 460;
-    private const int WM_SKUA_CHANGE_SERVER = 0x0400 + 465;
 
     private static readonly TimeSpan MetricRefreshInterval = TimeSpan.FromSeconds(1);
 
@@ -336,13 +323,13 @@ public partial class MainWindow : Window
                     return;
 
                 string username = bot.Player.Username;
-                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "BonxieTabs");
+                string dir = TabHostFiles.TabsDirectory;
                 System.IO.Directory.CreateDirectory(dir);
 
                 if (username != lastWrittenUsername)
                 {
                     lastWrittenUsername = username;
-                    string usernameFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.txt");
+                    string usernameFile = TabHostFiles.UsernameOf(Environment.ProcessId);
                     System.IO.File.WriteAllText(usernameFile, username);
                 }
 
@@ -354,7 +341,7 @@ public partial class MainWindow : Window
 
                 // Report the server-assigned room number rather than the internal area ID or requested private-room number.
                 string room = map.RoomNumber > 0 ? map.RoomNumber.ToString() : string.Empty;
-                string locationFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.location.json");
+                string locationFile = TabHostFiles.LocationOf(Environment.ProcessId);
                 string temporaryFile = locationFile + ".tmp";
                 string locationJson = JsonSerializer.Serialize(new
                 {
@@ -379,9 +366,9 @@ public partial class MainWindow : Window
         _tabTitleSyncTimer?.Stop();
         try
         {
-            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "BonxieTabs");
-            string file = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.txt");
-            string locationFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.location.json");
+            string dir = TabHostFiles.TabsDirectory;
+            string file = TabHostFiles.UsernameOf(Environment.ProcessId);
+            string locationFile = TabHostFiles.LocationOf(Environment.ProcessId);
             string temporaryFile = locationFile + ".tmp";
             if (System.IO.File.Exists(file))
                 System.IO.File.Delete(file);
@@ -511,7 +498,7 @@ public partial class MainWindow : Window
             });
             return IntPtr.Zero;
         }
-        else if (uMsg == 0x0400 + 448) // WM_SKUA_LOGOUT
+        else if (uMsg == WM_SKUA_LOGOUT)
         {
             Ioc.Default.GetRequiredService<IScriptServers>().Logout();
             return IntPtr.Zero;
@@ -522,7 +509,7 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    string tempFile = Path.Combine(Path.GetTempPath(), "skua_global_change_server.txt");
+                    string tempFile = TabHostFiles.ChangeServer;
                     if (!System.IO.File.Exists(tempFile))
                         return;
 
@@ -543,7 +530,7 @@ public partial class MainWindow : Window
             {
                 try 
                 {
-                    string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_jump.txt");
+                    string tempFile = TabHostFiles.Jump;
                     if (System.IO.File.Exists(tempFile))
                     {
                         string[] lines = System.IO.File.ReadAllLines(tempFile);
@@ -589,7 +576,7 @@ public partial class MainWindow : Window
             {
                 try 
                 {
-                    string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_jump_player.txt");
+                    string tempFile = TabHostFiles.JumpPlayer;
                     if (System.IO.File.Exists(tempFile))
                     {
                         string targetPlayer = System.IO.File.ReadAllText(tempFile)?.Trim() ?? "";
@@ -606,7 +593,7 @@ public partial class MainWindow : Window
             {
                 try 
                 {
-                    string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_script.txt");
+                    string tempFile = TabHostFiles.Script;
                     if (System.IO.File.Exists(tempFile))
                     {
                         string targetScript = System.IO.File.ReadAllText(tempFile);
@@ -669,7 +656,7 @@ public partial class MainWindow : Window
             {
                 try 
                 {
-                    string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_playlist.json");
+                    string tempFile = TabHostFiles.Playlist;
                     if (System.IO.File.Exists(tempFile))
                     {
                         var data = System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.List<Skua.Shared.Avalonia.ViewModels.ScriptSchedulerViewModel.SavedScriptItem>>(System.IO.File.ReadAllText(tempFile));
@@ -715,13 +702,13 @@ public partial class MainWindow : Window
             var bot = Ioc.Default.GetRequiredService<IScriptInterface>();
             return new IntPtr(bot.Player.LoggedIn ? 1 : 0);
         }
-        else if (uMsg == 0x0400 + 458) // WM_SKUA_ACCEPT_QUEST
+        else if (uMsg == WM_SKUA_ACCEPT_QUEST)
         {
             Task.Run(() => 
             {
                 try 
                 {
-                    string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_accept_quest.txt");
+                    string tempFile = TabHostFiles.AcceptQuest;
                     if (System.IO.File.Exists(tempFile))
                     {
                         string[] lines = System.IO.File.ReadAllLines(tempFile);
@@ -751,7 +738,7 @@ public partial class MainWindow : Window
             });
             return IntPtr.Zero;
         }
-        else if (uMsg == 0x0400 + 452) // WM_SKUA_THROTTLE
+        else if (uMsg == WM_SKUA_THROTTLE)
         {
             bool throttle = wParam.ToInt32() == 1;
             var options = Ioc.Default.GetRequiredService<IScriptOption>();
@@ -795,7 +782,7 @@ public partial class MainWindow : Window
             }
             return IntPtr.Zero;
         }
-        else if (uMsg == WM_SKUA_OPEN_BANK)
+        else if (uMsg == HotKeys.WM_SKUA_OPEN_BANK)
         {
             Dispatcher.UIThread.Post(() =>
             {

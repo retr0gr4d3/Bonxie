@@ -223,7 +223,7 @@ public partial class App : Application
 
                         if (embedHwnd != 0)
                         {
-                            PostMessage_Native(new IntPtr(embedHwnd), 0x0400 + 440 /* WM_SKUA_CHILD_READY */, childHwnd, new IntPtr(Environment.ProcessId));
+                            PostMessage_Native(new IntPtr(embedHwnd), Services.TabHostMessages.WM_SKUA_CHILD_READY, childHwnd, new IntPtr(Environment.ProcessId));
                         }
                     }
                 };

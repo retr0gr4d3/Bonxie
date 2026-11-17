@@ -13,6 +13,8 @@ using Skua.Core.Interfaces;
 using Skua.Core.Messaging;
 using Skua.Core.Models;
 using Skua.Core.AppStartup;
+using Skua.App.Avalonia.Services;
+using static Skua.App.Avalonia.Services.TabHostMessages;
 using Skua.Shared.Avalonia.ViewModels;
 using Skua.Shared.Avalonia.ViewModels.ScriptRepo;
 using Skua.Shared.Avalonia.ViewModels.Dialogs;
@@ -44,8 +46,6 @@ public partial class TabbedHostWindow : Window
     public static extern IntPtr DefSubclassProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam);
 
     private SubclassProc? _subclassProc;
-    private const int WM_SKUA_CHILD_READY = 0x0400 + 440;
-    private const int WM_SKUA_CHILD_DPICHANGED = 0x0400 + 441;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
@@ -414,7 +414,7 @@ public partial class TabbedHostWindow : Window
 
         Task.Run(() =>
         {
-            string dir = Path.Combine(Path.GetTempPath(), "BonxieTabs");
+            string dir = TabHostFiles.TabsDirectory;
             if (!Directory.Exists(dir)) return;
 
             var updates = new List<(TabItem Tab, string Username)>();
@@ -709,8 +709,8 @@ public partial class TabbedHostWindow : Window
                     info.Process.Kill();
                     info.Process.WaitForExit(500);
                 }
-                try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.txt")); } catch { }
-                try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.location.json")); } catch { }
+                try { File.Delete(TabHostFiles.UsernameOf(info.Process.Id)); } catch { }
+                try { File.Delete(TabHostFiles.LocationOf(info.Process.Id)); } catch { }
                 _latestClientLocations.Remove(info.Process.Id);
                 _lastRecordedLocationByPid.Remove(info.Process.Id);
             }
@@ -890,20 +890,6 @@ public partial class TabbedHostWindow : Window
 
     #region Tab Switching & Positioning
 
-    private const int WM_SKUA_GRIDVIEW = 0x0400 + 444;
-    private const int WM_SKUA_START_SCRIPT = 0x0400 + 445;
-    private const int WM_SKUA_STOP_SCRIPT = 0x0400 + 446;
-    private const int WM_SKUA_LOGIN = 0x0400 + 447;
-    private const int WM_SKUA_LOGOUT = 0x0400 + 448;
-    private const int WM_SKUA_JUMP_MAP = 0x0400 + 449;
-    private const int WM_SKUA_SET_OPTION = 0x0400 + 450;
-    private const int WM_SKUA_THROTTLE = 0x0400 + 452;
-    private const int WM_SKUA_LOAD_SCRIPT = 0x0400 + 453;
-    private const int WM_SKUA_ARMY_SCHEDULER = 0x0400 + 454;
-    private const int WM_SKUA_ARMY_SCHEDULER_STOP = 0x0400 + 455;
-    private const int WM_SKUA_CHECK_LOGIN = 0x0400 + 456;
-    private const int WM_SKUA_JUMP_PLAYER = 0x0400 + 457;
-    private const int WM_SKUA_AUTO_ATTACK = 0x0400 + 459;
 
     private void OnArmySchedulerStart(ScriptSchedulerViewModel.ArmySchedulerMessage m)
     {
@@ -929,7 +915,7 @@ public partial class TabbedHostWindow : Window
                 return;
             }
 
-            string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_playlist.json");
+            string tempFile = TabHostFiles.Playlist;
             var data = m.Queue.Select(x => new ScriptSchedulerViewModel.SavedScriptItem { Path = x.Path, Id = x.Id, Name = x.Name }).ToList();
             System.IO.File.WriteAllText(tempFile, System.Text.Json.JsonSerializer.Serialize(data));
 
@@ -1283,7 +1269,7 @@ public partial class TabbedHostWindow : Window
     {
         try
         {
-            string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_script.txt");
+            string tempFile = TabHostFiles.Script;
             System.IO.File.WriteAllText(tempFile, scriptPath);
 
             foreach (var info in _tabs.Values)
@@ -1611,7 +1597,7 @@ public partial class TabbedHostWindow : Window
 
         SaveArmyJumpSettings();
         string mapToJoin = string.IsNullOrWhiteSpace(_lastJumpRoom) ? _lastJumpMap : $"{_lastJumpMap}-{_lastJumpRoom}";
-        string tempFile = Path.Combine(Path.GetTempPath(), "skua_global_jump.txt");
+        string tempFile = TabHostFiles.Jump;
         File.WriteAllLines(tempFile, new[] { mapToJoin, _lastJumpCell, string.IsNullOrWhiteSpace(destination.Pad) ? "Spawn" : destination.Pad.Trim() });
 
         foreach (var info in _tabs.Values)
@@ -1980,7 +1966,7 @@ public partial class TabbedHostWindow : Window
 
         _lastJumpPlayer = targetPlayer;
         SaveArmyJumpSettings();
-        string tempFile = Path.Combine(Path.GetTempPath(), "skua_global_jump_player.txt");
+        string tempFile = TabHostFiles.JumpPlayer;
         File.WriteAllText(tempFile, targetPlayer);
 
         foreach (var info in _tabs.Values)
@@ -2003,9 +1989,6 @@ public partial class TabbedHostWindow : Window
                 PostMessage(info.ChildHwnd, WM_SKUA_JUMP_HOUSE, IntPtr.Zero, IntPtr.Zero);
     }
 
-    private const int WM_SKUA_JUMP_HOUSE = 0x0400 + 464;
-    private const int WM_SKUA_CHANGE_SERVER = 0x0400 + 465;
-    private const int WM_SKUA_ACCEPT_QUEST = 0x0400 + 458;
     private string _lastAcceptQuestId = "";
 
     private async void MenuItem_ChangeServerAll_Click(object? sender, RoutedEventArgs e)
@@ -2079,7 +2062,7 @@ public partial class TabbedHostWindow : Window
 
         try
         {
-            string tempFile = Path.Combine(Path.GetTempPath(), "skua_global_change_server.txt");
+            string tempFile = TabHostFiles.ChangeServer;
             File.WriteAllText(tempFile, targetServer);
             int sentCount = 0;
             foreach (var info in _tabs.Values)
@@ -2109,7 +2092,7 @@ public partial class TabbedHostWindow : Window
             if (!string.IsNullOrWhiteSpace(questId))
             {
                 _lastAcceptQuestId = questId;
-                string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_accept_quest.txt");
+                string tempFile = TabHostFiles.AcceptQuest;
                 System.IO.File.WriteAllLines(tempFile, new[] { questId, "-1" });
 
                 foreach (var info in _tabs.Values)
@@ -2508,7 +2491,7 @@ public partial class TabbedHostWindow : Window
                         info.Process.Kill();
                     if (info.Process != null)
                     {
-                        try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.txt")); } catch { }
+                        try { File.Delete(TabHostFiles.UsernameOf(info.Process.Id)); } catch { }
                     }
                 }
                 catch { }
@@ -2982,7 +2965,7 @@ public partial class TabbedHostWindow : Window
         {
             try
             {
-                string file = Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.txt");
+                string file = TabHostFiles.UsernameOf(info.Process.Id);
                 if (File.Exists(file))
                 {
                     string name = File.ReadAllText(file).Trim();
