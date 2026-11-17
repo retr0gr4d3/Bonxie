@@ -21,88 +21,9 @@ using CustomDialogViewModel = Skua.Shared.Avalonia.ViewModels.Dialogs.CustomDial
 
 namespace Skua.Manager.Avalonia.Services;
 
-public class DialogService : IDialogService
+public class DialogService : Skua.Shared.Avalonia.Services.DialogServiceBase
 {
-    public bool? ShowDialog<TViewModel>(TViewModel viewModel) where TViewModel : class
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-            return Dispatcher.UIThread.Invoke(() => ShowDialog(viewModel));
-        return ShowDialogInternal(viewModel, DefaultTitle(viewModel));
-    }
-
-    public bool? ShowDialog<TViewModel>(TViewModel viewModel, string title) where TViewModel : class
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-            return Dispatcher.UIThread.Invoke(() => ShowDialog(viewModel, title));
-        return ShowDialogInternal(viewModel, title);
-    }
-
-    // A dialog shown without a title uses its own (DialogViewModelBase.Title) instead of the view model's type name.
-    private static string DefaultTitle(object viewModel)
-    {
-        return viewModel is DialogViewModelBase { Title: { Length: > 0 } title } ? title : viewModel.GetType().Name;
-    }
-
-    public bool? ShowDialog<TViewModel>(TViewModel viewModel, Action<TViewModel> callback) where TViewModel : class
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-            return Dispatcher.UIThread.Invoke(() => ShowDialog(viewModel, callback));
-        bool? result = ShowDialogInternal(viewModel, DefaultTitle(viewModel));
-        if (result == true)
-            callback?.Invoke(viewModel);
-        return result;
-    }
-
-    public void ShowDialog(IOptionContainer optionContainer, Action<IOptionContainerViewModel> callback)
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-        {
-            Dispatcher.UIThread.Invoke(() => ShowDialog(optionContainer, callback));
-            return;
-        }
-        OptionContainerViewModel vm = new(optionContainer);
-        bool? result = ShowOptionContainerDialog(vm, "Script Options");
-        if (result == true)
-        {
-            callback?.Invoke(vm);
-        }
-    }
-
-    public void ShowMessageBox(string message, string caption)
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-        {
-            Dispatcher.UIThread.Invoke(() => ShowMessageBox(message, caption));
-            return;
-        }
-        _ = ShowButtonsDialog(caption, message, ["OK"]);
-    }
-
-    public bool? ShowMessageBox(string message, string caption, bool yesAndNo)
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-            return Dispatcher.UIThread.Invoke(() => ShowMessageBox(message, caption, yesAndNo));
-        string[] buttons = yesAndNo ? ["No", "Yes"] : ["OK"];
-        string clicked = ShowButtonsDialog(caption, message, buttons);
-        return clicked == "Yes" || clicked == "OK";
-    }
-
-    public DialogResult ShowMessageBox(string message, string caption, params string[] buttons)
-    {
-        if (!Dispatcher.UIThread.CheckAccess())
-            return Dispatcher.UIThread.Invoke(() => ShowMessageBox(message, caption, buttons));
-        string[] actualButtons = buttons.Length == 0 ? ["OK"] : buttons;
-        string clicked = ShowButtonsDialog(caption, message, actualButtons);
-        int index = Array.IndexOf(actualButtons, clicked);
-        return index < 0 ? DialogResult.Cancelled : new DialogResult(clicked, index);
-    }
-
-    public IInputDialogViewModel CreateInputDialog(string title, string dialogHint)
-    {
-        return new InputDialogViewModel(title, dialogHint);
-    }
-
-    private bool? ShowDialogInternal<TViewModel>(TViewModel viewModel, string title) where TViewModel : class
+    protected override bool? ShowDialogInternal<TViewModel>(TViewModel viewModel, string title) where TViewModel : class
     {
         return viewModel switch
         {
@@ -118,7 +39,7 @@ public class DialogService : IDialogService
         };
     }
 
-    private static bool? ShowAccountEditorDialog(AccountEditorViewModel vm, string title)
+    private bool? ShowAccountEditorDialog(AccountEditorViewModel vm, string title)
     {
         Window dialog = CreateBaseDialog(title);
         dialog.Width = 440;
@@ -234,7 +155,7 @@ public class DialogService : IDialogService
         return result;
     }
 
-    private static bool? ShowInputDialog(InputDialogViewModel vm, string title)
+    private bool? ShowInputDialog(InputDialogViewModel vm, string title)
     {
         Window dialog = CreateBaseDialog(title);
         TextBox input = new() { Text = vm.DialogTextInput, Watermark = vm.TextBoxHint };
@@ -279,7 +200,7 @@ public class DialogService : IDialogService
         return result;
     }
 
-    private static bool? ShowSelectGroupDialog(SelectGroupDialogViewModel vm, string title)
+    private bool? ShowSelectGroupDialog(SelectGroupDialogViewModel vm, string title)
     {
         Window dialog = CreateBaseDialog(title);
         ComboBox groups = new()
@@ -328,7 +249,7 @@ public class DialogService : IDialogService
         return result;
     }
 
-    private static bool? ShowSelectAccountDialog(SelectAccountDialogViewModel vm, string title)
+    private bool? ShowSelectAccountDialog(SelectAccountDialogViewModel vm, string title)
     {
         Window dialog = CreateBaseDialog(title);
         TextBox searchBox = new()
@@ -394,7 +315,7 @@ public class DialogService : IDialogService
         return result;
     }
 
-    private static bool? ShowOptionContainerDialog(OptionContainerViewModel vm, string title)
+    protected override bool? ShowOptionContainerDialog(OptionContainerViewModel vm, string title)
     {
         Window dialog = CreateBaseDialog(string.IsNullOrWhiteSpace(title) ? "Script Options" : title);
         dialog.SizeToContent = SizeToContent.Manual;
@@ -494,15 +415,7 @@ public class DialogService : IDialogService
         return result;
     }
 
-    private static bool? ShowCustomDialog(CustomDialogViewModel vm, string title)
-    {
-        string clicked = ShowButtonsDialog(title, vm.Message, vm.Buttons.ToArray());
-        int index = vm.Buttons.IndexOf(clicked);
-        vm.Result = index < 0 ? DialogResult.Cancelled : new DialogResult(clicked, index);
-        return index >= 0;
-    }
-
-    private static bool? ShowFallbackDialog<TViewModel>(TViewModel vm, string title) where TViewModel : class
+    private bool? ShowFallbackDialog<TViewModel>(TViewModel vm, string title) where TViewModel : class
     {
         Window dialog = CreateBaseDialog(title);
         bool? result = null;
@@ -533,7 +446,7 @@ public class DialogService : IDialogService
         return result;
     }
 
-    private static string ShowButtonsDialog(string title, string message, string[] buttons)
+    protected override string ShowButtonsDialog(string title, string message, string[] buttons)
     {
         Window dialog = CreateBaseDialog(title);
         dialog.Width = (message.Length > 200 || message.Contains('\n')) ? 560 : 420;
@@ -614,152 +527,4 @@ public class DialogService : IDialogService
         return clicked;
     }
 
-    private static Window CreateBaseDialog(string title)
-    {
-        Window dialog = new()
-        {
-            Title = title,
-            Width = 420,
-            SizeToContent = SizeToContent.Height,
-            CanResize = false,
-            WindowStartupLocation = WindowStartupLocation.Manual,
-            SystemDecorations = SystemDecorations.BorderOnly,
-            ExtendClientAreaToDecorationsHint = true,
-            ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome,
-            ExtendClientAreaTitleBarHeightHint = 32,
-            Classes = { "skua" }
-        };
-        dialog[!Window.BackgroundProperty] = new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaPageBrush");
-        Skua.Shared.Avalonia.Services.ThemeResourceApplicator.ApplyTitleBarTheme(dialog);
-        return dialog;
-    }
-
-    private static Control WrapWithShell(string title, Control content)
-    {
-        Grid layout = new();
-        layout.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-        layout.RowDefinitions.Add(new RowDefinition(GridLength.Star));
-
-        WindowTitleBar titleBar = new()
-        {
-            TitleText = title
-        };
-
-        Border contentHost = new()
-        {
-            Child = content
-        };
-        contentHost.Classes.Add("shell");
-        contentHost[!Border.BackgroundProperty] = new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaPageBrush");
-
-        Grid.SetRow(titleBar, 0);
-        Grid.SetRow(contentHost, 1);
-        layout.Children.Add(titleBar);
-        layout.Children.Add(contentHost);
-
-        Border rootBorder = new()
-        {
-            BorderThickness = new Thickness(1),
-            Child = layout,
-            BoxShadow = new BoxShadows(new BoxShadow
-            {
-                Blur = 12,
-                Spread = 2,
-                Color = Color.FromArgb(140, 0, 0, 0)
-            })
-        };
-        rootBorder[!Border.BorderBrushProperty] = new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaBorderBrush");
-        rootBorder[!Border.BackgroundProperty] = new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaPageBrush");
-
-        return rootBorder;
-    }
-
-    private static void Show(Window dialog)
-    {
-        Skua.Shared.Avalonia.Services.WindowPlacementHelper.CenterOnActiveScreen(dialog);
-        Window? owner = GetOwner();
-        if (owner != null)
-        {
-            ShowModalAndBlock(dialog, owner);
-            return;
-        }
-
-        ShowAndBlock(dialog);
-    }
-
-    private static Window? GetOwner()
-    {
-        if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
-            return null;
-
-        Window? activeVisible = desktop.Windows.FirstOrDefault(w => w.IsVisible && w.IsActive);
-        if (activeVisible != null)
-            return activeVisible;
-
-        Window? visible = desktop.Windows.LastOrDefault(w => w.IsVisible);
-        if (visible != null)
-            return visible;
-
-        return desktop.MainWindow?.IsVisible == true ? desktop.MainWindow : null;
-    }
-
-    private static void ShowModalAndBlock(Window dialog, Window owner)
-    {
-        using CancellationTokenSource closedCts = new();
-        void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
-
-        dialog.Closed += OnClosed;
-        dialog.Opened += OnOpened;
-        _ = dialog.ShowDialog(owner);
-
-        try
-        {
-            Dispatcher.UIThread.MainLoop(closedCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected when the dialog closes and cancels the nested loop.
-        }
-        finally
-        {
-            dialog.Closed -= OnClosed;
-            dialog.Opened -= OnOpened;
-        }
-    }
-
-    private static void ShowAndBlock(Window dialog)
-    {
-        using CancellationTokenSource closedCts = new();
-        void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
-
-        dialog.Closed += OnClosed;
-        dialog.Opened += OnOpened;
-        dialog.Show();
-
-        try
-        {
-            Dispatcher.UIThread.MainLoop(closedCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected when the dialog closes and cancels the nested loop.
-        }
-        finally
-        {
-            dialog.Closed -= OnClosed;
-            dialog.Opened -= OnOpened;
-        }
-    }
-
-    private static void FocusDefaultDialogAction(Window dialog)
-    {
-        dialog.Activate();
-        dialog.Focus();
-        dialog.GetVisualDescendants()
-            .OfType<Button>()
-            .FirstOrDefault(b => b.IsDefault)?
-            .Focus();
-    }
 }
