@@ -45,7 +45,7 @@ public partial class App : Application
         services.AddSingleton<IScriptManager, ScriptManager>();
         services.AddTransient<IScriptOptionContainer, ScriptOptionContainer>();
         services.AddTransient<IOptionContainer, OptionContainer>();
-        services.AddSingleton<ISettingsService, SettingsService>();
+        services.AddSingleton<ISettingsService>(_ => new Skua.Core.Services.UnifiedSettingsService(Skua.Core.Models.AppRole.Manager));
         services.AddSingleton<IDispatcherService, DispatcherService>();
         services.AddSingleton<IDialogService, DialogService>();
         services.AddSingleton<IFileDialogService, FileDialogService>();

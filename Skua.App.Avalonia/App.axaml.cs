@@ -88,7 +88,7 @@ public partial class App : Application
         services.AddCommonServices();
         services.AddCompiler();
         services.AddScriptableObjects();
-        services.AddSingleton<ISettingsService, SettingsService>();
+        services.AddSingleton<ISettingsService>(_ => new Skua.Core.Services.UnifiedSettingsService(Skua.Core.Models.AppRole.Client));
         services.AddSingleton<IDispatcherService, DispatcherService>();
         services.AddSingleton<IClipboardService, ClipboardService>();
         services.AddSingleton<IDialogService, DialogService>();

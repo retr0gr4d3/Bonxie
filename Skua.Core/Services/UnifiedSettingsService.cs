@@ -1,3 +1,4 @@
+using Skua.Core.Interfaces;
 using Skua.Core.Models;
 using System.Collections.Specialized;
 using System.Reflection;
@@ -7,7 +8,8 @@ using System.Threading;
 
 namespace Skua.Core.Services;
 
-public class UnifiedSettingsService
+/// <summary>The settings of the client and the manager, kept together in one file that both processes share.</summary>
+public class UnifiedSettingsService : ISettingsService
 {
     private readonly string _clientSettingsFile;
     private readonly string _managerSettingsFile;
@@ -16,6 +18,12 @@ public class UnifiedSettingsService
     private AppRole _currentRole;
     private bool _initialized = false;
     private readonly Mutex _fileMutex;
+
+    /// <summary>Opens the settings as seen by <paramref name="role"/> (the client or the manager).</summary>
+    public UnifiedSettingsService(AppRole role) : this()
+    {
+        Initialize(role);
+    }
 
     public UnifiedSettingsService()
     {
