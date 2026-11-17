@@ -77,40 +77,20 @@ public class UnifiedSettingsService
         {
             try
             {
-                PropertyInfo? sharedProp = FindPropertyByJsonName(_root.Shared.GetType(), key);
-                if (sharedProp?.GetValue(_root.Shared) is object sharedVal && !IsDefaultOrEmpty(sharedVal))
+                // Shared settings win, then this app's own section, then the other app's.
+                object[] sections = _currentRole == AppRole.Manager
+                    ? [_root.Shared, _root.Manager, _root.Client]
+                    : [_root.Shared, _root.Client, _root.Manager];
+
+                foreach (object section in sections)
                 {
-                    if (typeof(T).IsAssignableFrom(sharedVal.GetType()))
-                        return (T)sharedVal;
+                    if (FindPropertyByJsonName(section.GetType(), key)?.GetValue(section) is T value && !IsDefaultOrEmpty(value))
+                        return value;
                 }
 
-                if (_currentRole == AppRole.Manager)
-                {
-                    PropertyInfo? managerProp = FindPropertyByJsonName(_root.Manager.GetType(), key);
-                    if (managerProp?.GetValue(_root.Manager) is object managerVal && !IsDefaultOrEmpty(managerVal))
-                        if (typeof(T).IsAssignableFrom(managerVal.GetType()))
-                            return (T)managerVal;
-
-                    PropertyInfo? clientProp = FindPropertyByJsonName(_root.Client.GetType(), key);
-                    if (clientProp?.GetValue(_root.Client) is object clientVal && !IsDefaultOrEmpty(clientVal))
-                        if (typeof(T).IsAssignableFrom(clientVal.GetType()))
-                            return (T)clientVal;
-                }
-                else
-                {
-                    PropertyInfo? clientProp = FindPropertyByJsonName(_root.Client.GetType(), key);
-                    if (clientProp?.GetValue(_root.Client) is object clientVal && !IsDefaultOrEmpty(clientVal))
-                        if (typeof(T).IsAssignableFrom(clientVal.GetType()))
-                            return (T)clientVal;
-
-                    PropertyInfo? managerProp = FindPropertyByJsonName(_root.Manager.GetType(), key);
-                    if (managerProp?.GetValue(_root.Manager) is object managerVal && !IsDefaultOrEmpty(managerVal))
-                        if (typeof(T).IsAssignableFrom(managerVal.GetType()))
-                            return (T)managerVal;
-                }
-
-                if (sharedProp?.GetValue(_root.Shared) is object sVal && typeof(T).IsAssignableFrom(sVal.GetType()))
-                    return (T)sVal;
+                // Nothing set anywhere: an empty shared value still beats the type's default.
+                if (FindPropertyByJsonName(_root.Shared.GetType(), key)?.GetValue(_root.Shared) is T sharedValue)
+                    return sharedValue;
             }
             catch (Exception)
             {
@@ -141,23 +121,8 @@ public class UnifiedSettingsService
         {
             try
             {
-                PropertyInfo? sharedProp = FindPropertyByJsonName(_root.Shared.GetType(), key);
-                if (sharedProp != null)
-                {
-                    sharedProp.SetValue(_root.Shared, value);
-                }
-
-                PropertyInfo? clientProp = FindPropertyByJsonName(_root.Client.GetType(), key);
-                if (clientProp != null)
-                {
-                    clientProp.SetValue(_root.Client, value);
-                }
-
-                PropertyInfo? managerProp = FindPropertyByJsonName(_root.Manager.GetType(), key);
-                if (managerProp != null)
-                {
-                    managerProp.SetValue(_root.Manager, value);
-                }
+                foreach (object section in new object[] { _root.Shared, _root.Client, _root.Manager })
+                    FindPropertyByJsonName(section.GetType(), key)?.SetValue(section, value);
 
                 SaveSettings();
             }

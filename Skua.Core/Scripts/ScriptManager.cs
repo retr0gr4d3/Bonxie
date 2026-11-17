@@ -803,7 +803,8 @@ public partial class ScriptManager : ObservableObject, IScriptManager, IDisposab
             _includedFilesLock.ExitReadLock();
         }
 
-        Parallel.ForEach(includedFilesSnapshot, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, includedFile =>
+        // Reads one included file (once) and records which of the other included files it depends on.
+        void RecordDependencies(string includedFile)
         {
             string includeSource = sourceCache.TryGetValue(includedFile, out string? cached) ? cached : SanitizeScriptSourceForLinux(File.ReadAllText(includedFile));
             sourceCache[includedFile] = includeSource;
@@ -828,7 +829,9 @@ public partial class ScriptManager : ObservableObject, IScriptManager, IDisposab
                     normalizedDeps.Add(matchingFile);
             }
             dependencyGraph[includedFile] = normalizedDeps;
-        });
+        }
+
+        Parallel.ForEach(includedFilesSnapshot, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, RecordDependencies);
 
         HashSet<string> allReferencedFiles;
         _includedFilesLock.EnterReadLock();
@@ -867,31 +870,7 @@ public partial class ScriptManager : ObservableObject, IScriptManager, IDisposab
             }
 
             foreach (string newFile in newlyAddedFiles)
-            {
-                string includeSource = sourceCache.TryGetValue(newFile, out string? cached) ? cached : SanitizeScriptSourceForLinux(File.ReadAllText(newFile));
-                sourceCache[newFile] = includeSource;
-                CheckScriptVersionRequirement(includeSource);
-                List<string> deps = ExtractIncludeDependencies(includeSource, newFile);
-                List<string> normalizedDeps = new();
-                foreach (string dep in deps)
-                {
-                    string? matchingFile;
-                    _includedFilesLock.EnterReadLock();
-                    try
-                    {
-                        matchingFile = _includedFiles.FirstOrDefault(path => path.Equals(dep, StringComparison.Ordinal));
-                        if (matchingFile is null && OperatingSystem.IsWindows())
-                            matchingFile = _includedFiles.FirstOrDefault(path => path.Equals(dep, StringComparison.OrdinalIgnoreCase));
-                    }
-                    finally
-                    {
-                        _includedFilesLock.ExitReadLock();
-                    }
-                    if (matchingFile is not null)
-                        normalizedDeps.Add(matchingFile);
-                }
-                dependencyGraph[newFile] = normalizedDeps;
-            }
+                RecordDependencies(newFile);
         }
 
         List<string> orderedFiles;
