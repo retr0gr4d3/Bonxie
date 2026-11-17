@@ -182,7 +182,7 @@ call :Progress 42 "Compiling projects in parallel"
 rem The current latest Mugetsu release moved the AVX fallback asset to
 rem tag v1.6.0-skua.2 while retaining the skua.1 asset filename.
 rem Use latest/download for that optional asset without editing the csproj.
-dotnet build "%BUILD_FILTER%" -c Release --no-restore --verbosity minimal --nologo -m:%BUILD_WORKERS% -p:BuildInParallel=true -p:UseSharedCompilation=true -p:SkuaPlayerAvxUrl=https://github.com/retr0gr4d3/skua-mugetsu/releases/latest/download/Mugetsu-1.6.0-skua.1-windows-x86-64-v2.zip
+dotnet build "%BUILD_FILTER%" -c Release --no-restore --verbosity minimal --nologo -m:%BUILD_WORKERS% -p:BuildInParallel=true -p:UseSharedCompilation=true
 if errorlevel 1 goto :Failure
 
 call :Progress 82 "All selected projects compiled"
