@@ -94,18 +94,15 @@ public class AccountDataDictionaryJsonConverter : JsonConverter<Dictionary<strin
         foreach (KeyValuePair<string, AccountData> kvp in value)
         {
             writer.WritePropertyName(kvp.Key);
-            string password = kvp.Value.Password ?? string.Empty;
-            if (password.StartsWith("enc:"))
-                password = Skua.Core.Utils.CryptoUtils.Decrypt(password);
-
-            AccountData plainData = new()
+            // In memory the password is plain text; on disk it is always encrypted.
+            AccountData storedData = new()
             {
                 DisplayName = kvp.Value.DisplayName,
-                Password = password,
+                Password = Skua.Core.Utils.CryptoUtils.Encrypt(Skua.Core.Utils.CryptoUtils.Decrypt(kvp.Value.Password ?? string.Empty)),
                 Tags = kvp.Value.Tags,
                 UseCheck = kvp.Value.UseCheck
             };
-            JsonSerializer.Serialize(writer, plainData, options);
+            JsonSerializer.Serialize(writer, storedData, options);
         }
         writer.WriteEndObject();
     }

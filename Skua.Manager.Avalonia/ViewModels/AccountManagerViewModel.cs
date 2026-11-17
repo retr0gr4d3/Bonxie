@@ -871,9 +871,7 @@ public sealed partial class AccountManagerViewModel : BotControlViewModelBase
         // Add or update accounts in-place
         foreach (KeyValuePair<string, AccountData> kvp in accs)
         {
-            string password = kvp.Value.Password ?? string.Empty;
-            if (password.StartsWith("enc:"))
-                password = Skua.Core.Utils.CryptoUtils.Decrypt(password);
+            string password = Skua.Core.Utils.CryptoUtils.Decrypt(kvp.Value.Password ?? string.Empty);
 
             IAccountItemViewModel? existing = Accounts.FirstOrDefault(a => a.Username.Equals(kvp.Key, StringComparison.OrdinalIgnoreCase));
             if (existing != null)
