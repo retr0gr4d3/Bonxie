@@ -37,9 +37,10 @@ public class UnifiedSettingsService
 
             _currentRole = role;
 
+            bool locked = false;
             try
             {
-                _fileMutex.WaitOne();
+                locked = AcquireFileMutex();
 
                 if (!File.Exists(ClientFileSources.SkuaSettingsDIR))
                 {
@@ -64,7 +65,8 @@ public class UnifiedSettingsService
             }
             finally
             {
-                _fileMutex.ReleaseMutex();
+                if (locked)
+                    _fileMutex.ReleaseMutex();
             }
         }
     }
@@ -534,9 +536,10 @@ public class UnifiedSettingsService
 
     private void SaveSettings()
     {
+        bool locked = false;
         try
         {
-            _fileMutex.WaitOne();
+            locked = AcquireFileMutex();
 
             string tempFile = ClientFileSources.SkuaSettingsDIR + ".tmp";
 
@@ -544,11 +547,7 @@ public class UnifiedSettingsService
             string json = JsonSerializer.Serialize(_root, options);
             File.WriteAllText(tempFile, json);
 
-            if (File.Exists(ClientFileSources.SkuaSettingsDIR))
-            {
-                File.Delete(ClientFileSources.SkuaSettingsDIR);
-            }
-
+            // One rename: a crash leaves either the old file or the new one, never neither.
             File.Move(tempFile, ClientFileSources.SkuaSettingsDIR, overwrite: true);
 
             // Signal cross-process settings change event
@@ -565,7 +564,21 @@ public class UnifiedSettingsService
         }
         finally
         {
-            _fileMutex.ReleaseMutex();
+            if (locked)
+                _fileMutex.ReleaseMutex();
+        }
+    }
+
+    // A process that died holding the mutex leaves it abandoned; the wait still hands it to us.
+    private bool AcquireFileMutex()
+    {
+        try
+        {
+            return _fileMutex.WaitOne();
+        }
+        catch (AbandonedMutexException)
+        {
+            return true;
         }
     }
 
@@ -675,14 +688,16 @@ public class UnifiedSettingsService
     {
         lock (_lock)
         {
+            bool locked = false;
             try
             {
-                _fileMutex.WaitOne();
+                locked = AcquireFileMutex();
                 LoadSettings();
             }
             finally
             {
-                _fileMutex.ReleaseMutex();
+                if (locked)
+                    _fileMutex.ReleaseMutex();
             }
         }
     }
