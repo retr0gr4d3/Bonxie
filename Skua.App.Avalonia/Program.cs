@@ -132,6 +132,7 @@ internal static class Program
                 Skua.Shared.Avalonia.Utils.AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: false);
             }
             Environment.CurrentDirectory = AppContext.BaseDirectory;
+            Skua.Shared.Avalonia.Utils.BundledNativeLibraries.Load();
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
         catch (Exception ex)
