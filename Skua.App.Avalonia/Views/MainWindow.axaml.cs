@@ -100,6 +100,9 @@ public partial class MainWindow : Window
     private MenuItem? _pluginsMenuItem;
     private DispatcherTimer? _tabTitleSyncTimer;
     private bool _isFlashLoaded;
+    private bool _initializedOnOpen;
+    private bool _windowSetupDone;
+    private bool _startupExecuted;
     private bool _isTitleBarPermanentlyHidden = false;
     private int _preThrottleFPS = -1;
     private string? _preThrottleQuality = null;
@@ -271,6 +274,14 @@ public partial class MainWindow : Window
         Opened += MainWindow_Opened;
         Closing += (s, e) => App.DisposeTrayIcon();
         Closed += MainWindow_Closed;
+#if !IS_WINDOWS
+        if (OperatingSystem.IsLinux())
+        {
+            AddHandler(PointerPressedEvent, (_, _) => FlashHost?.FocusHostWindow(), global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            Activated += (_, _) => FlashHost?.OnWindowActivationChanged(true);
+            Deactivated += (_, _) => FlashHost?.OnWindowActivationChanged(false);
+        }
+#endif
 
         if (_options is System.ComponentModel.INotifyPropertyChanged notifyOptions)
         {
@@ -291,86 +302,118 @@ public partial class MainWindow : Window
 
     private void MainWindow_Opened(object? sender, EventArgs e)
     {
-        _startup.Execute();
-        _flash.FlashCall += OnFlashCall;
+        if (_initializedOnOpen && _startupExecuted)
+            return;
 
-        try
-        {
-            var themeService = Ioc.Default.GetService<IThemeService>();
-            bool isDark = themeService?.IsDarkTheme ?? true;
-            Skua.Shared.Avalonia.Services.ThemeResourceApplicator.ApplyTitleBarTheme(this, isDark);
-        }
-        catch { }
-        
-        try
-        {
-            if (_flash is Flash.FlashUtil player)
-                player.ParentWindow = FlashHost.WindowHandle;
-            _flash.InitializeFlash();
-        }
-        catch (Exception ex)
-        {
-            Ioc.Default.GetRequiredService<IDialogService>().ShowMessageBox(ex.Message, "Game failed to start");
-        }
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-#if IS_WINDOWS
-            if (this.TryGetPlatformHandle()?.Handle is IntPtr hwnd && hwnd != IntPtr.Zero)
-            {
-                SetWindowText(hwnd, _mainViewModel.Title ?? "Skua");
-                _subclassProc = WindowSubclassProc;
-                SetWindowSubclass(hwnd, _subclassProc, 1, IntPtr.Zero);
-            }
-#endif
-        }
-
-        _tabTitleSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        string lastWrittenUsername = "";
-        _tabTitleSyncTimer.Tick += (s, ev) =>
+        if (!_startupExecuted)
         {
             try
             {
-                var bot = Ioc.Default.GetRequiredService<IScriptInterface>();
-                if (!bot.Player.LoggedIn || string.IsNullOrWhiteSpace(bot.Player.Username))
-                    return;
+                _startup.Execute();
+                _startupExecuted = true;
+            }
+            catch (Exception ex)
+            {
+                Ioc.Default.GetService<IDialogService>()?.ShowMessageBox(ex.Message, "Startup Error");
+            }
+        }
 
-                string username = bot.Player.Username;
-                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "BonxieTabs");
-                System.IO.Directory.CreateDirectory(dir);
+        if (!_windowSetupDone)
+        {
+            _flash.FlashCall -= OnFlashCall;
+            _flash.FlashCall += OnFlashCall;
 
-                if (username != lastWrittenUsername)
-                {
-                    lastWrittenUsername = username;
-                    string usernameFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.txt");
-                    System.IO.File.WriteAllText(usernameFile, username);
-                }
-
-                IScriptMap map = Ioc.Default.GetRequiredService<IScriptMap>();
-                IScriptPlayer player = Ioc.Default.GetRequiredService<IScriptPlayer>();
-                IScriptOption options = Ioc.Default.GetRequiredService<IScriptOption>();
-                if (!map.Loaded || string.IsNullOrWhiteSpace(map.Name) || string.IsNullOrWhiteSpace(player.Cell))
-                    return;
-
-                // Report the server-assigned room number rather than the internal area ID or requested private-room number.
-                string room = map.RoomNumber > 0 ? map.RoomNumber.ToString() : string.Empty;
-                string locationFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.location.json");
-                string temporaryFile = locationFile + ".tmp";
-                string locationJson = JsonSerializer.Serialize(new
-                {
-                    Map = map.Name,
-                    Room = room,
-                    Cell = player.Cell,
-                    Pad = string.IsNullOrWhiteSpace(player.Pad) ? "Spawn" : player.Pad,
-                    Username = username,
-                    UpdatedUtc = DateTime.UtcNow
-                });
-                System.IO.File.WriteAllText(temporaryFile, locationJson);
-                System.IO.File.Move(temporaryFile, locationFile, true);
+            try
+            {
+                var themeService = Ioc.Default.GetService<IThemeService>();
+                bool isDark = themeService?.IsDarkTheme ?? true;
+                Skua.Shared.Avalonia.Services.ThemeResourceApplicator.ApplyTitleBarTheme(this, isDark);
             }
             catch { }
-        };
-        _tabTitleSyncTimer.Start();
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+#if IS_WINDOWS
+                if (this.TryGetPlatformHandle()?.Handle is IntPtr hwnd && hwnd != IntPtr.Zero)
+                {
+                    SetWindowText(hwnd, _mainViewModel.Title ?? "Skua");
+                    _subclassProc = WindowSubclassProc;
+                    SetWindowSubclass(hwnd, _subclassProc, 1, IntPtr.Zero);
+                }
+#endif
+            }
+
+            _tabTitleSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            string lastWrittenUsername = "";
+            _tabTitleSyncTimer.Tick += (s, ev) =>
+            {
+                try
+                {
+                    var bot = Ioc.Default.GetRequiredService<IScriptInterface>();
+                    if (!bot.Player.LoggedIn || string.IsNullOrWhiteSpace(bot.Player.Username))
+                        return;
+
+                    string username = bot.Player.Username;
+                    string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "BonxieTabs");
+                    System.IO.Directory.CreateDirectory(dir);
+
+                    if (username != lastWrittenUsername)
+                    {
+                        lastWrittenUsername = username;
+                        string usernameFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.txt");
+                        System.IO.File.WriteAllText(usernameFile, username);
+                    }
+
+                    IScriptMap map = Ioc.Default.GetRequiredService<IScriptMap>();
+                    IScriptPlayer player = Ioc.Default.GetRequiredService<IScriptPlayer>();
+                    IScriptOption options = Ioc.Default.GetRequiredService<IScriptOption>();
+                    if (!map.Loaded || string.IsNullOrWhiteSpace(map.Name) || string.IsNullOrWhiteSpace(player.Cell))
+                        return;
+
+                    // Report the server-assigned room number rather than the internal area ID or requested private-room number.
+                    string room = map.RoomNumber > 0 ? map.RoomNumber.ToString() : string.Empty;
+                    string locationFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.location.json");
+                    string temporaryFile = locationFile + ".tmp";
+                    string locationJson = JsonSerializer.Serialize(new
+                    {
+                        Map = map.Name,
+                        Room = room,
+                        Cell = player.Cell,
+                        Pad = string.IsNullOrWhiteSpace(player.Pad) ? "Spawn" : player.Pad,
+                        Username = username,
+                        UpdatedUtc = DateTime.UtcNow
+                    });
+                    System.IO.File.WriteAllText(temporaryFile, locationJson);
+                    System.IO.File.Move(temporaryFile, locationFile, true);
+                }
+                catch { }
+            };
+            _tabTitleSyncTimer.Start();
+            Skua.App.Avalonia.AppStartup.Options.StartMugetsuSettingsSync();
+            _windowSetupDone = true;
+        }
+
+        if (!_initializedOnOpen)
+        {
+            try
+            {
+#if IS_WINDOWS
+                if (_flash is Flash.FlashUtil player)
+                    player.ParentWindow = FlashHost.WindowHandle;
+                _flash.InitializeFlash();
+#else
+                _flash.InitializeFlash();
+                if (_flash is Flash.FlashUtil player)
+                    FlashHost?.AttachFlash(player);
+#endif
+                _initializedOnOpen = true;
+            }
+            catch (Exception ex)
+            {
+                _initializedOnOpen = false;
+                Ioc.Default.GetRequiredService<IDialogService>().ShowMessageBox(ex.Message, "Game failed to start");
+            }
+        }
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)

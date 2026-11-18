@@ -421,3 +421,6 @@ skua_global_*.txt
 
 # Local build script
 LocalBuild.bat
+
+# Rust native X11 host
+Skua.X11Host/target/

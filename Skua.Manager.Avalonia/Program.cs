@@ -29,13 +29,16 @@ internal static class Program
     {
         InitializeAssemblyResolvers();
 
-        VelopackApp.Build()
-            .OnAfterInstallFastCallback(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
-            .OnAfterUpdateFastCallback(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
-            .OnBeforeUninstallFastCallback(_ => AppShortcutHelper.RemoveClientShortcuts())
-            .OnFirstRun(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
-            .OnRestarted(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
-            .Run();
+        if (OperatingSystem.IsWindows())
+        {
+            VelopackApp.Build()
+                .OnAfterInstallFastCallback(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
+                .OnAfterUpdateFastCallback(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
+                .OnBeforeUninstallFastCallback(_ => AppShortcutHelper.RemoveClientShortcuts())
+                .OnFirstRun(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
+                .OnRestarted(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
+                .Run();
+        }
 
         // ponytail: named events throw PlatformNotSupportedException off Windows, so Linux allows
         // several managers. Add a named Mutex + socket wake if that becomes a problem.
@@ -180,6 +183,7 @@ internal static class Program
     {
         AppBuilder builder = AppBuilder.Configure<App>()
             .UsePlatformDetect()
+            .UseHarfBuzz()
             .With(new Win32PlatformOptions
             {
                 RenderingMode = new[] { Win32RenderingMode.AngleEgl, Win32RenderingMode.Software },

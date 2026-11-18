@@ -187,6 +187,9 @@ git rev-parse --show-toplevel >/dev/null 2>&1 \
 command -v dotnet >/dev/null 2>&1 \
     || fail ".NET SDK was not found in PATH."
 
+command -v cargo >/dev/null 2>&1 \
+    || fail "Rust cargo was not found in PATH (needed for Skua.X11Host)."
+
 for project in "${PROJECTS[@]}"; do
     [[ -f "$project" ]] \
         || fail "Project file not found: $project"
@@ -312,7 +315,11 @@ printf 'Building the Linux client and three plugins with %s MSBuild workers.\n' 
 printf 'The Manager is intentionally excluded because the Linux release does not include it yet.\n'
 printf 'Incremental compilation and shared compiler are enabled.\n\n'
 
-progress 42 "Compiling Linux projects in parallel"
+progress 42 "Compiling native X11 host and Linux projects"
+
+printf '\nBuilding native X11 host (Skua.X11Host)...\n'
+cargo build --release --manifest-path "$ROOT_DIR/Skua.X11Host/Cargo.toml" \
+    || fail "Skua.X11Host build failed."
 
 # Build each project individually.
 # MSBuild handles project references and dependency ordering.
