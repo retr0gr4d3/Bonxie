@@ -14,6 +14,7 @@ version="${1:-$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' "$root/Directory.B
 out="$root/Build/linux-x64"
 
 rm -rf "$out"
+cargo build --release --target x86_64-unknown-linux-gnu --manifest-path "$root/Skua.X11Host/Cargo.toml"
 dotnet publish "$root/Skua.App.Avalonia/Skua.App.Avalonia.csproj" -c Release -r linux-x64 --self-contained true -o "$out"
 # The manager is the launcher (and Velopack entry point); it starts ./Bonxie from the same folder.
 dotnet publish "$root/Skua.Manager.Avalonia/Skua.Manager.Avalonia.csproj" -c Release -r linux-x64 --self-contained true -o "$out"

@@ -532,6 +532,8 @@ public partial class TabbedHostWindow : Window
 
         try
         {
+            Services.HotKeyService.ToggleFullscreenRequested = () => Dispatcher.UIThread.Post(() => ToggleFullScreen());
+            Services.HotKeyService.ToggleGameFullScreenRequested = () => Dispatcher.UIThread.Post(ToggleGameOnly);
             Ioc.Default.GetRequiredService<IHotKeyService>().Reload();
         }
         catch { }
@@ -663,6 +665,81 @@ public partial class TabbedHostWindow : Window
         return DefSubclassProc(hWnd, uMsg, wParam, lParam);
     }
 
+    private const int WM_SKUA_GAMEONLY = 0x0400 + 466;
+    private WindowState _stateBeforeFullScreen = WindowState.Normal;
+    private bool _gameOnly;
+    private bool _gameOnlySetFullScreen;
+
+    /// <summary>F11: the tab window goes borderless full screen, and back to what it was (it also ends game-only full screen).</summary>
+    private void ToggleFullScreen(bool keepGameOnly = false)
+    {
+        bool wasGameOnly = _gameOnly && !keepGameOnly;
+        if (wasGameOnly)
+            _gameOnlySetFullScreen = false;
+
+        if (WindowState == WindowState.FullScreen)
+        {
+            WindowState = (_stateBeforeFullScreen == WindowState.FullScreen || _stateBeforeFullScreen == WindowState.Minimized)
+                ? WindowState.Normal
+                : _stateBeforeFullScreen;
+            if (wasGameOnly)
+                ApplyGameOnly(false);
+            return;
+        }
+        _stateBeforeFullScreen = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+        WindowState = WindowState.FullScreen;
+        if (wasGameOnly)
+            ApplyGameOnly(false);
+    }
+
+    /// <summary>Shift+F11: full screen with only the game. The title bar, the tab bar, and every client's menu are hidden;
+    /// leaving it puts the window back as it was.</summary>
+    private void ToggleGameOnly()
+    {
+        if (_gameOnly)
+        {
+            if (_gameOnlySetFullScreen && WindowState == WindowState.FullScreen)
+                ToggleFullScreen(keepGameOnly: true);
+            _gameOnlySetFullScreen = false;
+            ApplyGameOnly(false);
+            return;
+        }
+        _gameOnlySetFullScreen = WindowState != WindowState.FullScreen;
+        if (_gameOnlySetFullScreen)
+            ToggleFullScreen(keepGameOnly: true);
+        ApplyGameOnly(true);
+    }
+
+    private void ApplyGameOnly(bool on)
+    {
+        _gameOnly = on;
+        if (on)
+            RootGrid.RowDefinitions = new RowDefinitions("0,0,*");
+        else
+            RootGrid.RowDefinitions = new RowDefinitions("32,Auto,*");
+
+        MainTitleBar.IsVisible = !on;
+        TabBarBorder.IsVisible = !on;
+        if (!on)
+        {
+            MainTitleBar.InvalidateMeasure();
+            MainTitleBar.InvalidateVisual();
+            RootGrid.InvalidateMeasure();
+            RootGrid.InvalidateArrange();
+        }
+
+        foreach (var info in _tabs.Values)
+            if (info.ChildHwnd != IntPtr.Zero)
+                PostMessage(info.ChildHwnd, WM_SKUA_GAMEONLY, new IntPtr(on ? 1 : 0), IntPtr.Zero);
+
+        _lastX = int.MinValue;
+        _lastY = int.MinValue;
+        _lastW = int.MinValue;
+        _lastH = int.MinValue;
+        _lastActiveHwnd = IntPtr.Zero;
+        Dispatcher.UIThread.Post(DoReposition, DispatcherPriority.Background);
+    }
+
     private void AttachChildWindow(TabInfo info, IntPtr childHwnd)
     {
         if (info.ChildHwnd != IntPtr.Zero) return;
@@ -677,6 +754,9 @@ public partial class TabbedHostWindow : Window
         exStyle |= WS_EX_TOOLWINDOW;
         SetWindowLong(childHwnd, GWL_EXSTYLE, exStyle);
         SetWindowLongAny(childHwnd, GWL_HWNDPARENT, _hostHwnd);
+
+        if (_gameOnly)
+            PostMessage(childHwnd, WM_SKUA_GAMEONLY, new IntPtr(1), IntPtr.Zero);
 
         if (_isGridViewEnabled)
         {
@@ -2899,6 +2979,7 @@ public partial class TabbedHostWindow : Window
         newTab.ContextMenu = ctx;
 
         Point startPoint = new Point();
+        PointerPressedEventArgs? dragPressedArgs = null;
         headerPanel.PointerPressed += (s, ev) =>
         {
             var prop = ev.GetCurrentPoint(headerPanel).Properties;
@@ -2912,6 +2993,7 @@ public partial class TabbedHostWindow : Window
                 return;
 
             startPoint = ev.GetPosition(null);
+            dragPressedArgs = ev;
             InstancesTabControl.SelectedItem = newTab;
 
             if (_isGridViewEnabled)
@@ -2938,35 +3020,35 @@ public partial class TabbedHostWindow : Window
             }
         };
 
+        var tabDragFormat = DataFormat.CreateInProcessFormat<TabItem>("TabItem");
         headerPanel.PointerMoved += async (s, ev) =>
         {
             if (editTitle.IsVisible) return;
 
-            if (ev.GetCurrentPoint(null).Properties.IsLeftButtonPressed)
+            if (dragPressedArgs != null && ev.GetCurrentPoint(null).Properties.IsLeftButtonPressed)
             {
                 Point mousePos = ev.GetPosition(null);
                 Vector diff = startPoint - mousePos;
                 if (Math.Abs(diff.X) > 4 || Math.Abs(diff.Y) > 4)
                 {
-                    var dragData = new global::Avalonia.Input.DataObject();
-                    dragData.Set("TabItem", newTab);
-                    await DragDrop.DoDragDrop(ev, dragData, DragDropEffects.Move);
+                    var pressed = dragPressedArgs;
+                    dragPressedArgs = null;
+                    var dragData = new DataTransfer();
+                    dragData.Add(DataTransferItem.Create(tabDragFormat, newTab));
+                    await DragDrop.DoDragDropAsync(pressed, dragData, DragDropEffects.Move);
                 }
             }
         };
 
         newTab.AddHandler(DragDrop.DropEvent, (s, ev) =>
         {
-            if (ev.Data.Contains("TabItem"))
+            TabItem? droppedTab = ev.DataTransfer.TryGetValue(tabDragFormat);
+            if (droppedTab != null && droppedTab != newTab)
             {
-                TabItem? droppedTab = ev.Data.Get("TabItem") as TabItem;
-                if (droppedTab != null && droppedTab != newTab)
-                {
-                    int targetIndex = InstancesTabControl.Items.IndexOf(newTab);
-                    InstancesTabControl.Items.Remove(droppedTab);
-                    InstancesTabControl.Items.Insert(targetIndex, droppedTab);
-                    InstancesTabControl.SelectedItem = droppedTab;
-                }
+                int targetIndex = InstancesTabControl.Items.IndexOf(newTab);
+                InstancesTabControl.Items.Remove(droppedTab);
+                InstancesTabControl.Items.Insert(targetIndex, droppedTab);
+                InstancesTabControl.SelectedItem = droppedTab;
             }
         });
 

@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input.Platform;
 using Skua.Core.Interfaces;
 using System.Collections.Concurrent;
 
@@ -27,7 +28,7 @@ public class ClipboardService : IClipboardService
 
     public string GetText()
     {
-        return GetClipboard()?.GetTextAsync().GetAwaiter().GetResult() ?? string.Empty;
+        return GetClipboard()?.TryGetTextAsync().GetAwaiter().GetResult() ?? string.Empty;
     }
 
     private static global::Avalonia.Input.Platform.IClipboard? GetClipboard()
