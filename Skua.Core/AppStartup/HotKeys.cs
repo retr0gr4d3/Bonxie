@@ -29,6 +29,7 @@ public class HotKeys
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     public static bool IsHostProcess { get; set; } = false;
+    public static int ParentHostProcessId { get; set; } = 0;
     public static IntPtr ActiveChildHwnd { get; set; } = IntPtr.Zero;
     public static IntPtr HostHwnd { get; set; } = IntPtr.Zero;
     public static Func<uint, IntPtr>? GetChildHwndForPid { get; set; }
@@ -110,7 +111,8 @@ public class HotKeys
         "ToggleUntargetDead",
         "ToggleUntargetSelf",
         "PlayerRest",
-        "RejectAllDrops"
+        "RejectAllDrops",
+        "TogglePauseScript"
     };
 
     public static int GetActionId(string actionName) => _actionList.IndexOf(actionName);
@@ -129,6 +131,7 @@ public class HotKeys
     {
         if (binding == "ToggleScript") return "Start Script";
         if (binding == "ArmyLoadScriptAll") return "Load Script to All";
+        if (binding == "OpenQuickLaunch") return "Open Quick Account Launch";
         string decamelized = Regex.Replace(binding, "([a-z])([A-Z])", "$1 $2");
         if (decamelized.StartsWith("Toggle ")) return decamelized.Substring(7);
         if (decamelized.StartsWith("Toggle")) return decamelized.Substring(6);
@@ -139,6 +142,7 @@ public class HotKeys
     {
         return binding switch
         {
+            "OpenQuickLaunch" => "Opens Quick Account Launch to launch saved accounts or groups.",
             // IScriptOption
             "ToggleRejectAllDrops" => "When enabled, will reject all items that drop.",
             "ToggleAggroAllMonsters" => "Provokes all monsters in the MAP, causing them to attack you simultaneously.",
@@ -198,6 +202,7 @@ public class HotKeys
             // Utilities
             "Logout" => "Safely logs your character out to the login screen.",
             "StopScript" => "Stops the currently running bot script.",
+            "TogglePauseScript" => "Pauses the running bot script, or resumes it if it is paused.",
             "PlayerRest" => "Forces your character to sit and rest.",
             "RejectAllDrops" => "Instantly rejects all items in the drop UI.",
             "LoadScript" => "Opens the file browser to load a new script.",
@@ -410,6 +415,7 @@ public class HotKeys
         _hotkeyRegistry["ToggleInfiniteRange"] = new RelayCommand(() => ExecuteOrForward("ToggleInfiniteRange", () => Ioc.Default.GetRequiredService<IScriptOption>().InfiniteRange ^= true));
         _hotkeyRegistry["Logout"] = new RelayCommand(() => ExecuteOrForward("Logout", () => Ioc.Default.GetRequiredService<IScriptServers>().Logout()));
         _hotkeyRegistry["StopScript"] = new RelayCommand(() => ExecuteOrForward("StopScript", () => Ioc.Default.GetRequiredService<IScriptManager>().StopScript()));
+        _hotkeyRegistry["TogglePauseScript"] = new RelayCommand(() => ExecuteOrForward("TogglePauseScript", TogglePauseScriptLocal));
         _hotkeyRegistry["JumpToHome"] = new RelayCommand(() => ExecuteOrForward("JumpToHome", () => Ioc.Default.GetRequiredService<IScriptMap>().Join("home", "Enter", "Spawn")));
 
         // Army Control
@@ -559,6 +565,14 @@ public class HotKeys
     private static void ToggleScriptLocal()
     {
         StrongReferenceMessenger.Default.Send<ToggleScriptMessage, int>((int)MessageChannels.ScriptStatus);
+    }
+
+    private static async void TogglePauseScriptLocal()
+    {
+        // Same as the Script Loader's Pause/Resume button; its status text follows ScriptPaused.
+        IScriptManager manager = Ioc.Default.GetRequiredService<IScriptManager>();
+        if (manager.ScriptRunning)
+            await manager.SetPausedAsync(!manager.ScriptPaused);
     }
 
     private static void LoadScriptLocal()

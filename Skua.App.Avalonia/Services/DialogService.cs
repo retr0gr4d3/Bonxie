@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -103,6 +104,7 @@ public class DialogService : IDialogService
         return index < 0 ? DialogResult.Cancelled : new DialogResult(clicked, index);
     }
 
+
     public IInputDialogViewModel CreateInputDialog(string title, string dialogHint)
     {
         return new InputDialogViewModel(title, dialogHint);
@@ -117,6 +119,7 @@ public class DialogService : IDialogService
             InputDialogViewModel input => ShowInputDialog(input, title),
             AssignHotKeyDialogViewModel hotKey => ShowAssignHotKeyDialog(hotKey, title),
             SkillRuleEditorDialogViewModel skillRules => ShowSkillRuleEditorDialog(skillRules, title),
+            FastTravelEditorDialogViewModel fastTravel => ShowFastTravelEditorDialog(fastTravel, title),
             MessageBoxDialogViewModel messageBox => ShowMessageBoxInternal(messageBox.Message, messageBox.Title, messageBox.YesAndNo),
             CustomDialogViewModel custom => ShowCustomDialog(custom, title),
             _ => ShowFallbackDialog(viewModel.GetType().Name, title)
@@ -177,7 +180,7 @@ public class DialogService : IDialogService
         };
 
         dialog.Content = WrapWithShell(title, content);
-        Show(dialog);
+        Show(dialog, input);
         return result;
     }
 
@@ -354,6 +357,127 @@ public class DialogService : IDialogService
         };
 
         dialog.Content = WrapWithShell(string.IsNullOrWhiteSpace(title) ? "Assign HotKey" : title, content);
+        Show(dialog);
+        return result;
+    }
+
+    private static bool? ShowFastTravelEditorDialog(FastTravelEditorDialogViewModel vm, string title)
+    {
+        Window dialog = CreateBaseDialog(string.IsNullOrWhiteSpace(title) ? "Edit Fast Travel" : title);
+        dialog.Width = 520;
+
+        TextBox descriptionInput = new() { Text = vm.Editor.Travel.DescriptionName, Watermark = "Destination name" };
+        TextBox mapInput = new() { Text = vm.Editor.Travel.MapName, Watermark = "Map name" };
+        TextBox cellInput = new() { Text = vm.Editor.Travel.Cell, Watermark = "Cell" };
+        TextBox padInput = new() { Text = vm.Editor.Travel.Pad, Watermark = "Pad" };
+
+        TextBlock validationMessage = new()
+        {
+            Text = string.Empty,
+            Foreground = new SolidColorBrush(Color.Parse("#EF4444")),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap
+        };
+
+        Button getCurrent = new()
+        {
+            Content = "Get Current",
+            MinWidth = 100,
+            Classes = { "skua-button" }
+        };
+        getCurrent.Click += (_, _) =>
+        {
+            vm.Editor.GetCurrentCommand.Execute(null);
+            mapInput.Text = vm.Editor.Travel.MapName;
+            cellInput.Text = vm.Editor.Travel.Cell;
+            padInput.Text = vm.Editor.Travel.Pad;
+            validationMessage.Text = string.Empty;
+        };
+
+        Button confirm = new() { Content = "Save", MinWidth = 84, Classes = { "skua-button", "skua-primary" }, IsDefault = true };
+        Button cancel = new() { Content = "Cancel", MinWidth = 84, Classes = { "skua-button" }, IsCancel = true };
+
+        bool? result = null;
+        confirm.Click += (_, _) =>
+        {
+            vm.Editor.Travel.DescriptionName = descriptionInput.Text?.Trim() ?? string.Empty;
+            vm.Editor.Travel.MapName = mapInput.Text?.Trim() ?? string.Empty;
+            vm.Editor.Travel.Cell = cellInput.Text?.Trim() ?? string.Empty;
+            vm.Editor.Travel.Pad = padInput.Text?.Trim() ?? string.Empty;
+
+            if (!vm.Editor.Travel.Validate())
+            {
+                validationMessage.Text = "Name, map, cell and pad are required.";
+                return;
+            }
+
+            result = true;
+            dialog.Close();
+        };
+
+        cancel.Click += (_, _) =>
+        {
+            result = false;
+            dialog.Close();
+        };
+
+        Grid fields = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto"),
+            ColumnSpacing = 12,
+            RowSpacing = 10
+        };
+
+        TextBlock descriptionLabel = new() { Text = "Name", VerticalAlignment = VerticalAlignment.Center };
+        TextBlock mapLabel = new() { Text = "Map", VerticalAlignment = VerticalAlignment.Center };
+        TextBlock cellLabel = new() { Text = "Cell", VerticalAlignment = VerticalAlignment.Center };
+        TextBlock padLabel = new() { Text = "Pad", VerticalAlignment = VerticalAlignment.Center };
+
+        Grid.SetRow(descriptionLabel, 0);
+        Grid.SetRow(descriptionInput, 0);
+        Grid.SetColumn(descriptionInput, 1);
+        Grid.SetRow(mapLabel, 1);
+        Grid.SetRow(mapInput, 1);
+        Grid.SetColumn(mapInput, 1);
+        Grid.SetRow(cellLabel, 2);
+        Grid.SetRow(cellInput, 2);
+        Grid.SetColumn(cellInput, 1);
+        Grid.SetRow(padLabel, 3);
+        Grid.SetRow(padInput, 3);
+        Grid.SetColumn(padInput, 1);
+
+        fields.Children.Add(descriptionLabel);
+        fields.Children.Add(descriptionInput);
+        fields.Children.Add(mapLabel);
+        fields.Children.Add(mapInput);
+        fields.Children.Add(cellLabel);
+        fields.Children.Add(cellInput);
+        fields.Children.Add(padLabel);
+        fields.Children.Add(padInput);
+
+        StackPanel actionButtons = new()
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Children = { cancel, confirm }
+        };
+
+        StackPanel content = new()
+        {
+            Margin = new Thickness(16),
+            Spacing = 12,
+            Children =
+            {
+                fields,
+                getCurrent,
+                validationMessage,
+                actionButtons
+            }
+        };
+
+        dialog.Content = WrapWithShell(string.IsNullOrWhiteSpace(title) ? "Edit Fast Travel" : title, content);
         Show(dialog);
         return result;
     }
@@ -702,9 +826,8 @@ public class DialogService : IDialogService
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.Manual,
-            SystemDecorations = SystemDecorations.BorderOnly,
+            WindowDecorations = WindowDecorations.BorderOnly,
             ExtendClientAreaToDecorationsHint = true,
-            ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome,
             ExtendClientAreaTitleBarHeightHint = 32,
             CanResize = false,
             ShowActivated = true,
@@ -755,18 +878,20 @@ public class DialogService : IDialogService
         return rootBorder;
     }
 
-    private static void Show(Window dialog)
+    // initialFocus: the control that takes focus when the dialog opens (e.g. an input box); otherwise the default button.
+    private static void Show(Window dialog, Control? initialFocus = null)
     {
+        Skua.Shared.Avalonia.Services.PointerCaptureReset.Release();
         Skua.Shared.Avalonia.Services.WindowPlacementHelper.CenterOnActiveScreen(dialog);
 
         Window? owner = GetOwner();
         if (owner != null)
         {
-            ShowModalAndBlock(dialog, owner);
+            ShowModalAndBlock(dialog, owner, initialFocus);
             return;
         }
 
-        ShowAndBlock(dialog);
+        ShowAndBlock(dialog, initialFocus);
     }
 
     private static Window? GetOwner()
@@ -785,11 +910,11 @@ public class DialogService : IDialogService
         return (desktop.MainWindow?.IsVisible == true && desktop.MainWindow.Position.X > -10000) ? desktop.MainWindow : null;
     }
 
-    private static void ShowModalAndBlock(Window dialog, Window owner)
+    private static void ShowModalAndBlock(Window dialog, Window owner, Control? initialFocus)
     {
         using CancellationTokenSource closedCts = new();
         void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
+        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog, initialFocus);
 
         dialog.Closed += OnClosed;
         dialog.Opened += OnOpened;
@@ -810,11 +935,11 @@ public class DialogService : IDialogService
         }
     }
 
-    private static void ShowAndBlock(Window dialog)
+    private static void ShowAndBlock(Window dialog, Control? initialFocus)
     {
         using CancellationTokenSource closedCts = new();
         void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
+        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog, initialFocus);
 
         dialog.Closed += OnClosed;
         dialog.Opened += OnOpened;
@@ -835,10 +960,20 @@ public class DialogService : IDialogService
         }
     }
 
-    private static void FocusDefaultDialogAction(Window dialog)
+    private static void FocusDefaultDialogAction(Window dialog, Control? initialFocus)
     {
         dialog.Activate();
+        // In the tab host, keep the tabs' game windows below the dialog so it is never hidden behind the game.
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { MainWindow: Views.TabbedHostWindow host })
+            host.KeepGameWindowsBelowHostWindows();
         dialog.Focus();
+        if (initialFocus?.Focus() == true)
+        {
+            // Select any prefilled text (e.g. the last quest ID) so typing replaces it.
+            (initialFocus as TextBox)?.SelectAll();
+            return;
+        }
+
         dialog.GetVisualDescendants()
             .OfType<Button>()
             .FirstOrDefault(b => b.IsDefault)?

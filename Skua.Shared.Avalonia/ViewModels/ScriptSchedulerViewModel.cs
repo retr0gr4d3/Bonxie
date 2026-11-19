@@ -309,6 +309,8 @@ public partial class ScriptSchedulerViewModel : BotControlViewModelBase
         }
     }
 
+    public void StartQueueDirect() => StartQueue();
+
     [RelayCommand]
     private void LoadPlaylist()
     {
@@ -328,29 +330,42 @@ public partial class ScriptSchedulerViewModel : BotControlViewModelBase
 
         if (path != null && File.Exists(path))
         {
-            try
+            if (!LoadPlaylistFromFile(path))
             {
-                var data = System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.List<SavedScriptItem>>(File.ReadAllText(path));
-                if (data != null)
-                {
-                    ScriptQueue.Clear();
-                    foreach (var item in data)
-                    {
-                        if (File.Exists(item.Path))
-                        {
-                            var vm = new ScriptItemViewModel(item.Path) { Id = item.Id };
-                            if (!string.IsNullOrEmpty(item.Name))
-                                vm.Name = item.Name;
-                            ScriptQueue.Add(vm);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _dialogService.ShowMessageBox($"Failed to load playlist: {ex.Message}", "Load Error");
+                _dialogService.ShowMessageBox("Failed to load playlist.", "Load Error");
             }
         }
+    }
+
+    public bool LoadPlaylistFromFile(string path)
+    {
+        if (IsRunningQueue || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return false;
+
+        try
+        {
+            var data = System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.List<SavedScriptItem>>(File.ReadAllText(path));
+            if (data != null)
+            {
+                ScriptQueue.Clear();
+                foreach (var item in data)
+                {
+                    if (File.Exists(item.Path))
+                    {
+                        var vm = new ScriptItemViewModel(item.Path) { Id = item.Id };
+                        if (!string.IsNullOrEmpty(item.Name))
+                            vm.Name = item.Name;
+                        ScriptQueue.Add(vm);
+                    }
+                }
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.WriteLine($"Failed to load playlist '{path}': {ex.Message}");
+        }
+        return false;
     }
 
     private string GetFormattedDuration()
@@ -387,6 +402,7 @@ public partial class ScriptSchedulerViewModel : BotControlViewModelBase
             _queueCts?.Dispose();
             _queueCts = null;
             _ = _discord.SendEmbedAsync("Scheduler Finished", "All scripts in the **Scheduler** playlist have completed!", 0x00FF00);
+            StrongReferenceMessenger.Default.Send(new PlaylistFinishedMessage(), (int)MessageChannels.ScriptStatus);
             return;
         }
 

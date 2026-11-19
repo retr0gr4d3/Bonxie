@@ -1,0 +1,12 @@
+[package]
+name = "bonxie-x11"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "bonxie_x11"
+crate-type = ["cdylib"]
+
+[dependencies]
+x11rb = "0.13"

@@ -40,6 +40,9 @@ public class FlashUtil : IFlashUtil
     private TcpListener? _listener;
     private Process? _player;
     private StreamWriter? _bridge;
+    private string? _pendingFreeMemoryPayloadJson;
+    private readonly Dictionary<string, string> _lastMugetsuSettings = new(StringComparer.Ordinal);
+    private int _playerGeneration;
     private int _nextId;
 
     public FlashUtil(IMessenger messenger, Lazy<IScriptManager> manager)
@@ -52,6 +55,8 @@ public class FlashUtil : IFlashUtil
 
     /// <summary>Native window the player draws in as a child window; 0 gives it a window of its own.</summary>
     public nint ParentWindow { get; set; }
+
+    public int PlayerPid => _player is { HasExited: false } proc ? proc.Id : 0;
 
     private static string SwfPath => Path.Combine(AppContext.BaseDirectory, "skua.swf");
 
@@ -75,31 +80,53 @@ public class FlashUtil : IFlashUtil
         if (!File.Exists(PlayerPath))
             throw new FileNotFoundException($"Missing the game player ({PlayerPath}). Rebuild Bonxie so it downloads the player.");
 
-        if (_listener is null)
-        {
-            _listener = new TcpListener(IPAddress.Loopback, 0);
-            _listener.Start();
-            _ = Task.Run(AcceptLoopAsync);
-        }
-
         StopPlayer();
+        int gen = Interlocked.Increment(ref _playerGeneration);
+        TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        _listener = listener;
+        _ = Task.Run(() => AcceptLoopAsync(listener, gen));
+
         ProcessStartInfo start = new(PlayerPath) { UseShellExecute = false };
         start.ArgumentList.Add("--skua-bridge");
-        start.ArgumentList.Add($"127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}");
+        start.ArgumentList.Add($"127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}");
+#if IS_WINDOWS
         if (ParentWindow != 0)
         {
             start.ArgumentList.Add("--skua-parent");
             start.ArgumentList.Add(ParentWindow.ToString(CultureInfo.InvariantCulture));
-            // On Linux the parent is an X11 window; the player would otherwise prefer Wayland, where it can't be embedded.
-            if (!OperatingSystem.IsWindows())
-                start.Environment.Remove("WAYLAND_DISPLAY");
         }
+#else
+        if (OperatingSystem.IsLinux())
+        {
+            start.Environment["SKUA_EMBEDDED"] = "1";
+            // Force the X11 backend on Linux so Skua.X11Host can reparent Mugetsu directly into Bonxie's child X11 window.
+            start.Environment.Remove("WAYLAND_DISPLAY");
+            start.Environment.Remove("WAYLAND_SOCKET");
+        }
+#endif
         start.ArgumentList.Add(SwfPath);
-        _player = Process.Start(start);
+        try
+        {
+            _player = Process.Start(start)
+                ?? throw new InvalidOperationException("Failed to start the game player process.");
+        }
+        catch
+        {
+            StopPlayer();
+            throw;
+        }
     }
 
     private void StopPlayer()
     {
+        Interlocked.Increment(ref _playerGeneration);
+        try { Interlocked.Exchange(ref _listener, null)?.Stop(); } catch { }
+        lock (_sendLock)
+        {
+            FailPending();
+            try { Interlocked.Exchange(ref _bridge, null)?.Dispose(); } catch { }
+        }
         try
         {
             if (_player is { HasExited: false })
@@ -110,9 +137,9 @@ public class FlashUtil : IFlashUtil
         _player = null;
     }
 
-    private async Task AcceptLoopAsync()
+    private async Task AcceptLoopAsync(TcpListener listener, int generation)
     {
-        while (_listener is { } listener)
+        while (ReferenceEquals(_listener, listener))
         {
             TcpClient client;
             try
@@ -123,20 +150,39 @@ public class FlashUtil : IFlashUtil
             {
                 return;
             }
-            _ = Task.Run(() => RunBridgeAsync(client));
+            _ = Task.Run(() => RunBridgeAsync(client, generation));
         }
     }
 
-    private async Task RunBridgeAsync(TcpClient client)
+    private async Task RunBridgeAsync(TcpClient client, int generation)
     {
         using (client)
         {
             client.NoDelay = true;
             NetworkStream stream = client.GetStream();
             StreamWriter writer = new(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
-            // A restarted player connects anew; whatever the old one still owed will never come.
-            Interlocked.Exchange(ref _bridge, writer)?.Dispose();
-            FailPending();
+            lock (_sendLock)
+            {
+                if (generation != Volatile.Read(ref _playerGeneration))
+                    return;
+
+                // Fail old pending calls and publish the new writer under _sendLock so Call()
+                // cannot register a request for the old writer after FailPending() or have a
+                // new-writer request cleared by it.
+                FailPending();
+                Interlocked.Exchange(ref _bridge, writer)?.Dispose();
+                try
+                {
+                    foreach (string settingJson in _lastMugetsuSettings.Values)
+                        writer.WriteLine(settingJson);
+                    if (_pendingFreeMemoryPayloadJson != null)
+                    {
+                        writer.WriteLine(_pendingFreeMemoryPayloadJson);
+                        _pendingFreeMemoryPayloadJson = null;
+                    }
+                }
+                catch { }
+            }
 
             try
             {
@@ -150,8 +196,11 @@ public class FlashUtil : IFlashUtil
             }
             finally
             {
-                if (Interlocked.CompareExchange(ref _bridge, null, writer) == writer)
-                    FailPending();
+                lock (_sendLock)
+                {
+                    if (Interlocked.CompareExchange(ref _bridge, null, writer) == writer)
+                        FailPending();
+                }
             }
         }
     }
@@ -182,6 +231,45 @@ public class FlashUtil : IFlashUtil
     }
 
     // ponytail: fails every pending call, so one sent to a new player in the instant it connects returns default too.
+    public void SendInput(object payload)
+    {
+        try
+        {
+            JObject obj = JObject.FromObject(payload);
+            string json = obj.ToString(Formatting.None);
+            string? inputType = obj["input"]?.Value<string>();
+            lock (_sendLock)
+            {
+                if (inputType == "mugetsu_setting")
+                {
+                    string? name = obj["name"]?.Value<string>();
+                    if (name == "free_memory")
+                    {
+                        if (_bridge is null)
+                            _pendingFreeMemoryPayloadJson = json;
+                    }
+                    else if (!string.IsNullOrEmpty(name))
+                    {
+                        _lastMugetsuSettings[name] = json;
+                    }
+                }
+
+                if (_bridge is { } writer)
+                {
+                    try
+                    {
+                        writer.WriteLine(json);
+                    }
+                    catch when (inputType == "mugetsu_setting" && obj["name"]?.Value<string>() == "free_memory")
+                    {
+                        _pendingFreeMemoryPayloadJson = json;
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
     private void FailPending()
     {
         foreach (int id in _pending.Keys)
@@ -220,18 +308,19 @@ public class FlashUtil : IFlashUtil
 
         try
         {
-            if (_bridge is not { } writer)
-                return default!;
-
             int id = Interlocked.Increment(ref _nextId);
             TaskCompletionSource<JObject> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pending[id] = tcs;
             try
             {
                 Stopwatch callTimer = Stopwatch.StartNew();
                 string request = JsonConvert.SerializeObject(new { id, name = function, args = args.Select(ToJs) });
                 lock (_sendLock)
+                {
+                    if (_bridge is not { } writer)
+                        return default!;
+                    _pending[id] = tcs;
                     writer.WriteLine(request);
+                }
 
                 if (!tcs.Task.Wait(CallTimeout))
                     throw new TimeoutException($"No answer from the game player within {CallTimeout.TotalSeconds}s.");

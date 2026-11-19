@@ -10,9 +10,11 @@ using Skua.App.Avalonia.Services;
 using Skua.App.Avalonia.ViewModels;
 using Skua.App.Avalonia.ViewModels.MainMenu;
 using Skua.Core.Interfaces;
+using Skua.Core.Models.Servers;
 using Skua.Core.Messaging;
 using System;
 using System.Collections.Specialized;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -22,8 +24,8 @@ using System.Threading.Tasks;
 using System.Text.Json;
 using Skua.Core.AppStartup;
 
-#if IS_WINDOWS
 using Avalonia.Input;
+#if IS_WINDOWS
 using System.Runtime.Versioning;
 #endif
 
@@ -68,6 +70,15 @@ public partial class MainWindow : Window
     }
 
     private const int WM_NCACTIVATE = 0x0086;
+    private const int WM_NCHITTEST = 0x0084;
+    private const int HTLEFT = 10;
+    private const int HTRIGHT = 11;
+    private const int HTTOP = 12;
+    private const int HTTOPLEFT = 13;
+    private const int HTTOPRIGHT = 14;
+    private const int HTBOTTOM = 15;
+    private const int HTBOTTOMLEFT = 16;
+    private const int HTBOTTOMRIGHT = 17;
     private const int WM_WINDOWPOSCHANGED = 0x0047;
     private const int WM_DPICHANGED = 0x02E0;
     private const int WM_GETDPISCALEDSIZE = 0x02E4;
@@ -79,6 +90,8 @@ public partial class MainWindow : Window
     private const int WM_SKUA_JUMP_MAP = 0x0400 + 449;
     private const int WM_SKUA_SET_OPTION = 0x0400 + 450;
     private const int WM_SKUA_LOAD_SCRIPT = 0x0400 + 453;
+    private const int WM_SKUA_START_SCRIPT = 0x0400 + 445;
+    private const int WM_SKUA_STOP_SCRIPT = 0x0400 + 446;
     private const int WM_SKUA_ARMY_SCHEDULER = 0x0400 + 454;
     private const int WM_SKUA_ARMY_SCHEDULER_STOP = 0x0400 + 455;
     private const int WM_SKUA_CHECK_LOGIN = 0x0400 + 456;
@@ -89,6 +102,10 @@ public partial class MainWindow : Window
     private const int WM_SKUA_AUTO_ATTACK = 0x0400 + 459;
     private const int WM_SKUA_OPEN_BANK = 0x0400 + 460;
     private const int WM_SKUA_CHANGE_SERVER = 0x0400 + 465;
+    private const int WM_SKUA_GAMEONLY = 0x0400 + 467; // 466 is upstream's WM_SKUA_CHILD_OPTION
+    private const int WM_SKUA_CHILD_OPTION = 0x0400 + 466;
+    // Set while applying an option the host sent, so it isn't echoed back (host and tabs would ping-pong).
+    private bool _applyingHostOption;
 
     private static readonly TimeSpan MetricRefreshInterval = TimeSpan.FromSeconds(1);
 
@@ -100,9 +117,71 @@ public partial class MainWindow : Window
     private MenuItem? _pluginsMenuItem;
     private DispatcherTimer? _tabTitleSyncTimer;
     private bool _isFlashLoaded;
+    private bool _initializedOnOpen;
+    private bool _windowSetupDone;
+    private bool _startupExecuted;
     private bool _isTitleBarPermanentlyHidden = false;
+    private WindowState _stateBeforeFullScreen = WindowState.Normal;
+    private bool _gameOnly;
+    private bool _gameOnlySetFullScreen;
     private int _preThrottleFPS = -1;
     private string? _preThrottleQuality = null;
+
+    public void ToggleFullScreen()
+    {
+        if (_gameOnly)
+        {
+            _gameOnlySetFullScreen = false;
+            ApplyGameOnly(false);
+        }
+
+        if (WindowState == WindowState.FullScreen)
+        {
+            WindowState = (_stateBeforeFullScreen == WindowState.FullScreen || _stateBeforeFullScreen == WindowState.Minimized)
+                ? WindowState.Normal
+                : _stateBeforeFullScreen;
+            return;
+        }
+
+        _stateBeforeFullScreen = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+        WindowState = WindowState.FullScreen;
+    }
+
+    public void ToggleDetachedGameOnly()
+    {
+        if (_gameOnly)
+        {
+            ApplyGameOnly(false);
+            if (_gameOnlySetFullScreen && WindowState == WindowState.FullScreen)
+            {
+                WindowState = (_stateBeforeFullScreen == WindowState.FullScreen || _stateBeforeFullScreen == WindowState.Minimized)
+                    ? WindowState.Normal
+                    : _stateBeforeFullScreen;
+            }
+            _gameOnlySetFullScreen = false;
+            return;
+        }
+
+        _gameOnlySetFullScreen = WindowState != WindowState.FullScreen;
+        if (_gameOnlySetFullScreen)
+        {
+            _stateBeforeFullScreen = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+            WindowState = WindowState.FullScreen;
+        }
+        ApplyGameOnly(true);
+    }
+
+    /// <summary>Game-only full screen: this client's menu bar and title bar are hidden (inside a tab window the tab window hides its own).</summary>
+    public void ApplyGameOnly(bool on)
+    {
+        _gameOnly = on;
+        var topNav = this.FindControl<global::Avalonia.Controls.Control>("TopNavBorder");
+        if (topNav != null)
+            topNav.IsVisible = !on;
+        var titleBar = this.FindControl<global::Avalonia.Controls.Control>("TitleBar");
+        if (titleBar != null && !_isTitleBarPermanentlyHidden)
+            titleBar.IsVisible = !on;
+    }
 
     public void HideTitleBar()
     {
@@ -119,11 +198,23 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ResizeGripOverlay.IsVisible = HotKeys.HostHwnd == IntPtr.Zero;
+        // The resize gutter around the game only serves a standalone window; in a tab it is dead space.
+        if (HotKeys.HostHwnd != IntPtr.Zero)
+            FlashHost.Margin = new global::Avalonia.Thickness(0);
         _mainViewModel = Ioc.Default.GetRequiredService<MainViewModel>();
         _mainMenuVm = Ioc.Default.GetRequiredService<MainMenuViewModel>();
         _flash = Ioc.Default.GetRequiredService<IFlashUtil>();
         _options = Ioc.Default.GetRequiredService<IScriptOption>();
         _startup = Ioc.Default.GetRequiredService<SkuaStartupHandler>();
+#if IS_WINDOWS
+        _options.PropertyChanged += (s, e) =>
+        {
+            // The tab host keeps Army Control's Show FPS checkbox; tell it when this tab changes ShowFPS itself.
+            if (e.PropertyName == nameof(IScriptOption.ShowFPS) && !_applyingHostOption && HotKeys.HostHwnd != IntPtr.Zero)
+                PostMessage(HotKeys.HostHwnd, WM_SKUA_CHILD_OPTION, new IntPtr(11), new IntPtr(_options.ShowFPS ? 1 : 0));
+        };
+#endif
         
         DataContext = _mainViewModel;
         Skua.Shared.Avalonia.Controls.Shell.WindowTitleBar.SetArtworkPath(Ioc.Default.GetRequiredService<ISettingsService>().GetShared().TitleBarArtworkPath);
@@ -225,6 +316,7 @@ public partial class MainWindow : Window
                 "Grabber" => MaterialIconKind.HandBackRightOutline,
                 "Current Drops" => MaterialIconKind.GiftOutline,
                 "Junk Items" => MaterialIconKind.DeleteSweepOutline,
+                "Calendar" => MaterialIconKind.CalendarMonth,
                 "Skills" => MaterialIconKind.LightningBoltOutline,
                 "Stats" => MaterialIconKind.ChartLine,
                 "Notification Center" => MaterialIconKind.BellOutline,
@@ -271,6 +363,12 @@ public partial class MainWindow : Window
         Opened += MainWindow_Opened;
         Closing += (s, e) => App.DisposeTrayIcon();
         Closed += MainWindow_Closed;
+#if !IS_WINDOWS
+        if (OperatingSystem.IsLinux())
+        {
+            AddHandler(PointerPressedEvent, (_, _) => FlashHost?.FocusHostWindow(), global::Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        }
+#endif
 
         if (_options is System.ComponentModel.INotifyPropertyChanged notifyOptions)
         {
@@ -291,86 +389,168 @@ public partial class MainWindow : Window
 
     private void MainWindow_Opened(object? sender, EventArgs e)
     {
-        _startup.Execute();
-        _flash.FlashCall += OnFlashCall;
+        if (_initializedOnOpen && _startupExecuted)
+            return;
 
-        try
-        {
-            var themeService = Ioc.Default.GetService<IThemeService>();
-            bool isDark = themeService?.IsDarkTheme ?? true;
-            Skua.Shared.Avalonia.Services.ThemeResourceApplicator.ApplyTitleBarTheme(this, isDark);
-        }
-        catch { }
-        
-        try
-        {
-            if (_flash is Flash.FlashUtil player)
-                player.ParentWindow = FlashHost.WindowHandle;
-            _flash.InitializeFlash();
-        }
-        catch (Exception ex)
-        {
-            Ioc.Default.GetRequiredService<IDialogService>().ShowMessageBox(ex.Message, "Game failed to start");
-        }
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-#if IS_WINDOWS
-            if (this.TryGetPlatformHandle()?.Handle is IntPtr hwnd && hwnd != IntPtr.Zero)
-            {
-                SetWindowText(hwnd, _mainViewModel.Title ?? "Skua");
-                _subclassProc = WindowSubclassProc;
-                SetWindowSubclass(hwnd, _subclassProc, 1, IntPtr.Zero);
-            }
-#endif
-        }
-
-        _tabTitleSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        string lastWrittenUsername = "";
-        _tabTitleSyncTimer.Tick += (s, ev) =>
+        if (!_startupExecuted)
         {
             try
             {
-                var bot = Ioc.Default.GetRequiredService<IScriptInterface>();
-                if (!bot.Player.LoggedIn || string.IsNullOrWhiteSpace(bot.Player.Username))
-                    return;
+                _startup.Execute();
+                _startupExecuted = true;
+            }
+            catch (Exception ex)
+            {
+                Ioc.Default.GetService<IDialogService>()?.ShowMessageBox(ex.Message, "Startup Error");
+            }
+        }
 
-                string username = bot.Player.Username;
-                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "BonxieTabs");
-                System.IO.Directory.CreateDirectory(dir);
+        if (!_windowSetupDone)
+        {
+            _flash.FlashCall -= OnFlashCall;
+            _flash.FlashCall += OnFlashCall;
 
-                if (username != lastWrittenUsername)
-                {
-                    lastWrittenUsername = username;
-                    string usernameFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.txt");
-                    System.IO.File.WriteAllText(usernameFile, username);
-                }
+            Services.HotKeyService.ToggleDetachedGameFullScreenRequested = () => Dispatcher.UIThread.Post(ToggleDetachedGameOnly);
+            if (HotKeys.IsHostProcess)
+            {
+                Services.HotKeyService.ToggleFullscreenRequested = () => Dispatcher.UIThread.Post(ToggleFullScreen);
+                Services.HotKeyService.ToggleGameFullScreenRequested = () => Dispatcher.UIThread.Post(ToggleDetachedGameOnly);
+            }
 
-                IScriptMap map = Ioc.Default.GetRequiredService<IScriptMap>();
-                IScriptPlayer player = Ioc.Default.GetRequiredService<IScriptPlayer>();
-                IScriptOption options = Ioc.Default.GetRequiredService<IScriptOption>();
-                if (!map.Loaded || string.IsNullOrWhiteSpace(map.Name) || string.IsNullOrWhiteSpace(player.Cell))
-                    return;
-
-                // Report the server-assigned room number rather than the internal area ID or requested private-room number.
-                string room = map.RoomNumber > 0 ? map.RoomNumber.ToString() : string.Empty;
-                string locationFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.location.json");
-                string temporaryFile = locationFile + ".tmp";
-                string locationJson = JsonSerializer.Serialize(new
-                {
-                    Map = map.Name,
-                    Room = room,
-                    Cell = player.Cell,
-                    Pad = string.IsNullOrWhiteSpace(player.Pad) ? "Spawn" : player.Pad,
-                    Username = username,
-                    UpdatedUtc = DateTime.UtcNow
-                });
-                System.IO.File.WriteAllText(temporaryFile, locationJson);
-                System.IO.File.Move(temporaryFile, locationFile, true);
+            try
+            {
+                var themeService = Ioc.Default.GetService<IThemeService>();
+                bool isDark = themeService?.IsDarkTheme ?? true;
+                Skua.Shared.Avalonia.Services.ThemeResourceApplicator.ApplyTitleBarTheme(this, isDark);
             }
             catch { }
-        };
-        _tabTitleSyncTimer.Start();
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+#if IS_WINDOWS
+                if (this.TryGetPlatformHandle()?.Handle is IntPtr hwnd && hwnd != IntPtr.Zero)
+                {
+                    SetWindowText(hwnd, _mainViewModel.Title ?? "Skua");
+                    _subclassProc = WindowSubclassProc;
+                    SetWindowSubclass(hwnd, _subclassProc, 1, IntPtr.Zero);
+                }
+#endif
+            }
+
+            _tabTitleSyncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            string lastWrittenUsername = "";
+            _tabTitleSyncTimer.Tick += (s, ev) =>
+            {
+                try
+                {
+                    var bot = Ioc.Default.GetRequiredService<IScriptInterface>();
+                    if (!bot.Player.LoggedIn || string.IsNullOrWhiteSpace(bot.Player.Username))
+                        return;
+
+                    string username = bot.Player.Username;
+                    string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "BonxieTabs");
+                    System.IO.Directory.CreateDirectory(dir);
+
+                    if (username != lastWrittenUsername)
+                    {
+                        lastWrittenUsername = username;
+                        string usernameFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.txt");
+                        System.IO.File.WriteAllText(usernameFile, username);
+                    }
+
+                    IScriptMap map = Ioc.Default.GetRequiredService<IScriptMap>();
+                    IScriptPlayer player = Ioc.Default.GetRequiredService<IScriptPlayer>();
+                    IScriptOption options = Ioc.Default.GetRequiredService<IScriptOption>();
+
+                    string mapName = (map.Loaded && !string.IsNullOrWhiteSpace(map.Name)) ? map.Name : "Enter";
+                    string cell = string.IsNullOrWhiteSpace(player.Cell) ? "Enter" : player.Cell;
+                    string pad = string.IsNullOrWhiteSpace(player.Pad) ? "Spawn" : player.Pad;
+
+                    int hp = player.Health;
+                    int maxHp = player.MaxHealth;
+                    int mp = player.Mana;
+                    int maxMp = player.MaxMana;
+                    int level = player.Level;
+                    int gold = player.Gold;
+                    int coins = player.Coins;
+                    string className = player.CurrentClass?.Name ?? "None";
+                    int classRank = player.CurrentClassRank;
+                    bool inCombat = player.InCombat;
+                    bool alive = player.Alive;
+                    bool hasTarget = player.HasTarget;
+                    string targetName = player.Target?.Name ?? string.Empty;
+                    int targetHp = player.Target?.HP ?? 0;
+                    int targetMaxHp = player.Target?.MaxHP ?? 0;
+
+                    // Report the server-assigned room number rather than the internal area ID or requested private-room number.
+                    string room = map.RoomNumber > 0 ? map.RoomNumber.ToString() : string.Empty;
+                    var scriptManager = Ioc.Default.GetService<IScriptManager>();
+                    string serverName = bot.Servers?.LastName ?? string.Empty;
+                    bool isScriptRunning = scriptManager?.ScriptRunning ?? false;
+                    string scriptName = System.IO.Path.GetFileName(scriptManager?.LoadedScript ?? string.Empty);
+
+                    string locationFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.location.json");
+                    string temporaryFile = locationFile + ".tmp";
+                    string locationJson = JsonSerializer.Serialize(new
+                    {
+                        Map = mapName,
+                        Room = room,
+                        Cell = cell,
+                        Pad = pad,
+                        Server = serverName,
+                        Username = username,
+                        Level = level,
+                        HP = hp,
+                        MaxHP = maxHp > 0 ? maxHp : (hp > 0 ? hp : 100),
+                        MP = mp,
+                        MaxMP = maxMp > 0 ? maxMp : 100,
+                        Gold = gold,
+                        Coins = coins,
+                        CurrentClass = className,
+                        ClassRank = classRank,
+                        InCombat = inCombat,
+                        Alive = alive,
+                        HasTarget = hasTarget,
+                        TargetName = targetName,
+                        TargetHP = targetHp,
+                        TargetMaxHP = targetMaxHp,
+                        LoggedIn = true,
+                        Playing = true,
+                        ScriptRunning = isScriptRunning,
+                        ScriptName = scriptName,
+                        UpdatedUtc = DateTime.UtcNow
+                    });
+                    System.IO.File.WriteAllText(temporaryFile, locationJson);
+                    System.IO.File.Move(temporaryFile, locationFile, true);
+                }
+                catch { }
+            };
+            _tabTitleSyncTimer.Start();
+            Skua.App.Avalonia.AppStartup.Options.StartMugetsuSettingsSync();
+            _windowSetupDone = true;
+        }
+
+        if (!_initializedOnOpen)
+        {
+            try
+            {
+#if IS_WINDOWS
+                if (_flash is Flash.FlashUtil player)
+                    player.ParentWindow = FlashHost.WindowHandle;
+                _flash.InitializeFlash();
+#else
+                _flash.InitializeFlash();
+                if (_flash is Flash.FlashUtil player)
+                    FlashHost?.AttachFlash(player);
+#endif
+                _initializedOnOpen = true;
+            }
+            catch (Exception ex)
+            {
+                _initializedOnOpen = false;
+                Ioc.Default.GetRequiredService<IDialogService>().ShowMessageBox(ex.Message, "Game failed to start");
+            }
+        }
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)
@@ -383,12 +563,16 @@ public partial class MainWindow : Window
             string file = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.txt");
             string locationFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.location.json");
             string temporaryFile = locationFile + ".tmp";
+            string remoteFile = System.IO.Path.Combine(dir, $"{Environment.ProcessId}.remote.txt");
             if (System.IO.File.Exists(file))
                 System.IO.File.Delete(file);
             if (System.IO.File.Exists(locationFile))
                 System.IO.File.Delete(locationFile);
             if (System.IO.File.Exists(temporaryFile))
                 System.IO.File.Delete(temporaryFile);
+            if (System.IO.File.Exists(remoteFile))
+                System.IO.File.Delete(remoteFile);
+            try { Ioc.Default.GetService<IRemoteControlService>()?.Stop(); } catch { }
         }
         catch { }
 
@@ -400,6 +584,7 @@ public partial class MainWindow : Window
     
     private void OnFlashCall(string function, params object[] args)
     {
+
         if (function == "loaded" && !_isFlashLoaded)
         {
             _isFlashLoaded = true;
@@ -419,7 +604,88 @@ public partial class MainWindow : Window
         }
     }
 
+
+    /// <summary>
+    /// Starts a native resize operation from one of the transparent Avalonia resize grips.
+    /// </summary>
+    /// <param name="edge">The edge or corner to resize from.</param>
+    /// <param name="e">The pointer event that initiated the resize.</param>
+    private void BeginGripResize(WindowEdge edge, PointerPressedEventArgs e)
+    {
+        if (HotKeys.HostHwnd != IntPtr.Zero || !CanResize || WindowState != WindowState.Normal ||
+            !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            return;
+
+        e.Handled = true;
+        BeginResizeDrag(edge, e);
+    }
+
+    /// <summary>Starts resizing from the left edge.</summary>
+    private void ResizeWestGrip_PointerPressed(object? sender, PointerPressedEventArgs e) => BeginGripResize(WindowEdge.West, e);
+
+    /// <summary>Starts resizing from the right edge.</summary>
+    private void ResizeEastGrip_PointerPressed(object? sender, PointerPressedEventArgs e) => BeginGripResize(WindowEdge.East, e);
+
+    /// <summary>Starts resizing from the bottom edge.</summary>
+    private void ResizeSouthGrip_PointerPressed(object? sender, PointerPressedEventArgs e) => BeginGripResize(WindowEdge.South, e);
+
+    /// <summary>Starts resizing from the bottom-left corner.</summary>
+    private void ResizeSouthWestGrip_PointerPressed(object? sender, PointerPressedEventArgs e) => BeginGripResize(WindowEdge.SouthWest, e);
+
+    /// <summary>Starts resizing from the bottom-right corner.</summary>
+    private void ResizeSouthEastGrip_PointerPressed(object? sender, PointerPressedEventArgs e) => BeginGripResize(WindowEdge.SouthEast, e);
+
 #if IS_WINDOWS
+    /// <summary>
+    /// Returns the Windows non-client resize code for all eight edges and corners of the top-level window.
+    /// </summary>
+    /// <param name="hWnd">The Bonxie top-level window handle.</param>
+    /// <param name="lParam">The screen-space pointer coordinates from WM_NCHITTEST.</param>
+    /// <param name="hitTest">The native resize hit-test code for the pointer location.</param>
+    /// <returns><see langword="true"/> when the point should start a window resize.</returns>
+    private static bool TryGetResizeHitTest(IntPtr hWnd, IntPtr lParam, out IntPtr hitTest)
+    {
+        hitTest = IntPtr.Zero;
+        if (!GetWindowRect(hWnd, out RECT bounds))
+            return false;
+
+        long packedPoint = lParam.ToInt64();
+        int x = unchecked((short)(packedPoint & 0xFFFF));
+        int y = unchecked((short)((packedPoint >> 16) & 0xFFFF));
+        uint dpi = GetDpiForWindow(hWnd);
+        double scale = dpi > 0 ? dpi / 96.0 : 1.0;
+        int resizeBand = Math.Max(8, (int)Math.Ceiling(12 * scale));
+
+        if (x < bounds.Left || x >= bounds.Right || y < bounds.Top || y >= bounds.Bottom)
+            return false;
+
+        bool left = x < bounds.Left + resizeBand;
+        bool right = x >= bounds.Right - resizeBand;
+        bool top = y < bounds.Top + resizeBand;
+        bool bottom = y >= bounds.Bottom - resizeBand;
+
+        if (top && left)
+            hitTest = (IntPtr)HTTOPLEFT;
+        else if (top && right)
+            hitTest = (IntPtr)HTTOPRIGHT;
+        else if (bottom && left)
+            hitTest = (IntPtr)HTBOTTOMLEFT;
+        else if (bottom && right)
+            hitTest = (IntPtr)HTBOTTOMRIGHT;
+        else if (left)
+            hitTest = (IntPtr)HTLEFT;
+        else if (right)
+            hitTest = (IntPtr)HTRIGHT;
+        else if (top)
+            hitTest = (IntPtr)HTTOP;
+        else if (bottom)
+            hitTest = (IntPtr)HTBOTTOM;
+        else
+            return false;
+
+        return true;
+    }
+
     private IntPtr WindowSubclassProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam, nuint uIdSubclass, IntPtr dwRefData)
     {
         if (uMsg == WM_NCACTIVATE)
@@ -436,6 +702,17 @@ public partial class MainWindow : Window
                     }
                 }
             }
+        }
+
+        // The native Flash host can occupy the top-level resize border with its child HWNDs.
+        // Pass those edge points through and return the correct native resize hit here.
+        if (uMsg == WM_NCHITTEST &&
+            CanResize &&
+            WindowState == WindowState.Normal &&
+            HotKeys.HostHwnd == IntPtr.Zero &&
+            TryGetResizeHitTest(hWnd, lParam, out IntPtr resizeHit))
+        {
+            return resizeHit;
         }
 
         // The tab host sizes this window to its tab area. On a monitor with another scale, keep that size instead of
@@ -473,6 +750,13 @@ public partial class MainWindow : Window
                 Dispatcher.UIThread.Post(() => SyncScalingWithWindowDpi(hWnd), DispatcherPriority.Background);
             }
             return result;
+        }
+
+        if (uMsg == WM_SKUA_GAMEONLY)
+        {
+            bool on = wParam != IntPtr.Zero;
+            Dispatcher.UIThread.Post(() => ApplyGameOnly(on));
+            return IntPtr.Zero;
         }
 
         if (uMsg == WM_SKUA_GRIDVIEW)
@@ -641,6 +925,11 @@ public partial class MainWindow : Window
                 case 8: options.UseFunctionBasedSkills = value; break;
                 case 9: options.StreamerMode = value; break;
                 case 10: options.AggroMonsters = value; break;
+                case 11:
+                    _applyingHostOption = true;
+                    try { options.ShowFPS = value; }
+                    finally { _applyingHostOption = false; }
+                    break;
                 case 99:
                     var sm = Ioc.Default.GetRequiredService<Skua.App.Avalonia.ViewModels.ScriptLoaderViewModel>();
                     var scheduler = Ioc.Default.GetRequiredService<Skua.Shared.Avalonia.ViewModels.ScriptSchedulerViewModel>();
@@ -663,6 +952,29 @@ public partial class MainWindow : Window
             }
             return IntPtr.Zero;
         }
+        else if (uMsg == WM_SKUA_START_SCRIPT)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                var sm = Ioc.Default.GetRequiredService<Skua.App.Avalonia.ViewModels.ScriptLoaderViewModel>();
+                if (!sm.ScriptManager.ScriptRunning && sm.ToggleScriptCommand.CanExecute(null))
+                    sm.ToggleScriptCommand.Execute(null);
+            });
+            return IntPtr.Zero;
+        }
+        else if (uMsg == WM_SKUA_STOP_SCRIPT)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                var sm = Ioc.Default.GetRequiredService<Skua.App.Avalonia.ViewModels.ScriptLoaderViewModel>();
+                var scheduler = Ioc.Default.GetRequiredService<Skua.Shared.Avalonia.ViewModels.ScriptSchedulerViewModel>();
+                if (scheduler.IsRunningQueue && scheduler.StopQueueCommand.CanExecute(null))
+                    scheduler.StopQueueCommand.Execute(null);
+                else if (sm.ScriptManager.ScriptRunning && sm.ToggleScriptCommand.CanExecute(null))
+                    sm.ToggleScriptCommand.Execute(null);
+            });
+            return IntPtr.Zero;
+        }
         else if (uMsg == WM_SKUA_ARMY_SCHEDULER)
         {
             Task.Run(() => 
@@ -670,33 +982,97 @@ public partial class MainWindow : Window
                 try 
                 {
                     string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_playlist.json");
+                    var scheduler = Ioc.Default.GetRequiredService<Skua.Shared.Avalonia.ViewModels.ScriptSchedulerViewModel>();
+                    var resolvedItems = new System.Collections.Generic.List<(string path, string name, Guid id)>();
+
                     if (System.IO.File.Exists(tempFile))
                     {
-                        var data = System.Text.Json.JsonSerializer.Deserialize<System.Collections.Generic.List<Skua.Shared.Avalonia.ViewModels.ScriptSchedulerViewModel.SavedScriptItem>>(System.IO.File.ReadAllText(tempFile));
-                        var scheduler = Ioc.Default.GetRequiredService<Skua.Shared.Avalonia.ViewModels.ScriptSchedulerViewModel>();
-                        Dispatcher.UIThread.Post(() =>
+                        string content = System.IO.File.ReadAllText(tempFile).Trim();
+                        if (content.StartsWith("["))
                         {
-                            scheduler.ScriptQueue.Clear();
-                            if (data != null)
+                            try
                             {
-                                foreach (var item in data)
+                                using var doc = System.Text.Json.JsonDocument.Parse(content);
+                                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
                                 {
-                                    if (System.IO.File.Exists(item.Path))
+                                    foreach (var el in doc.RootElement.EnumerateArray())
                                     {
-                                        var vm = new Skua.Shared.Avalonia.ViewModels.ScriptItemViewModel(item.Path) { Id = item.Id };
-                                        if (!string.IsNullOrEmpty(item.Name)) vm.Name = item.Name;
-                                        scheduler.ScriptQueue.Add(vm);
+                                        string rawPath = string.Empty;
+                                        string rawName = string.Empty;
+                                        Guid id = Guid.NewGuid();
+
+                                        if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                                        {
+                                            rawPath = el.GetString() ?? string.Empty;
+                                        }
+                                        else if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
+                                        {
+                                            if (el.TryGetProperty("Path", out var pProp) || el.TryGetProperty("path", out pProp))
+                                                rawPath = pProp.GetString() ?? string.Empty;
+                                            if (el.TryGetProperty("Name", out var nProp) || el.TryGetProperty("name", out nProp))
+                                                rawName = nProp.GetString() ?? string.Empty;
+                                            if (el.TryGetProperty("Id", out var idProp) && idProp.TryGetGuid(out var parsedGuid))
+                                                id = parsedGuid;
+                                        }
+
+                                        if (string.IsNullOrWhiteSpace(rawPath))
+                                            continue;
+
+                                        string resolved = rawPath;
+                                        if (!System.IO.File.Exists(resolved))
+                                        {
+                                            string candidate = System.IO.Path.Combine(Skua.Core.Models.ClientFileSources.SkuaScriptsDIR, rawPath.Replace('/', System.IO.Path.DirectorySeparatorChar).TrimStart(System.IO.Path.DirectorySeparatorChar));
+                                            if (System.IO.File.Exists(candidate))
+                                                resolved = candidate;
+                                            else
+                                            {
+                                                string fileName = System.IO.Path.GetFileName(rawPath);
+                                                if (!string.IsNullOrEmpty(fileName) && System.IO.Directory.Exists(Skua.Core.Models.ClientFileSources.SkuaScriptsDIR))
+                                                {
+                                                    var found = System.IO.Directory.EnumerateFiles(Skua.Core.Models.ClientFileSources.SkuaScriptsDIR, fileName, System.IO.SearchOption.AllDirectories).FirstOrDefault();
+                                                    if (!string.IsNullOrEmpty(found) && System.IO.File.Exists(found))
+                                                        resolved = found;
+                                                }
+                                            }
+                                        }
+
+                                        if (System.IO.File.Exists(resolved))
+                                        {
+                                            string displayName = !string.IsNullOrWhiteSpace(rawName) ? rawName : System.IO.Path.GetFileNameWithoutExtension(resolved);
+                                            resolvedItems.Add((resolved, displayName, id));
+                                        }
                                     }
                                 }
                             }
-                            if (scheduler.ScriptQueue.Count > 0 && !scheduler.IsRunningQueue)
+                            catch { }
+                        }
+                    }
+
+                    if (resolvedItems.Count > 0)
+                    {
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            try
                             {
-                                if (scheduler.StartQueueCommand.CanExecute(null))
-                                    scheduler.StartQueueCommand.Execute(null);
+                                scheduler.ScriptQueue.Clear();
+                                foreach (var (p, n, id) in resolvedItems)
+                                {
+                                    var vm = new Skua.Shared.Avalonia.ViewModels.ScriptItemViewModel(p) { Id = id };
+                                    if (!string.IsNullOrEmpty(n)) vm.Name = n;
+                                    scheduler.ScriptQueue.Add(vm);
+                                }
+
+                                if (scheduler.ScriptQueue.Count > 0 && !scheduler.IsRunningQueue)
+                                {
+                                    if (scheduler.StartQueueCommand.CanExecute(null))
+                                        scheduler.StartQueueCommand.Execute(null);
+                                }
                             }
+                            catch { }
                         });
                     }
-                } catch { }
+                }
+                catch { }
             });
             return IntPtr.Zero;
         }

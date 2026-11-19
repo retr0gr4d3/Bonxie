@@ -5,6 +5,7 @@ using Skua.Core.Models.Shops;
 namespace Skua.Core.Messaging;
 
 public sealed record LogoutMessage();
+public sealed record PlayerDisconnectedMessage();
 public sealed record LogoutRequestedMessage();
 public sealed record LoginMessage(string Username);
 public sealed record PlayerDeathMessage();
@@ -31,6 +32,7 @@ public sealed record ScriptStartedMessage();
 public sealed record ScriptErrorMessage(Exception Exception);
 public sealed record ScriptStoppingMessage();
 public sealed record ScriptStoppedMessage();
+public sealed record PlaylistFinishedMessage();
 
 public sealed class ScriptStoppingRequestMessage : AsyncRequestMessage<bool?>
 {
