@@ -87,7 +87,7 @@
     -->
     <PropertyGroup>
         <!-- Files named as the skua-mugetsu "Build Mugetsu" workflow's draft release names them. -->
-        <SkuaPlayerVersion>2.0.1-skua.1</SkuaPlayerVersion>
+        <SkuaPlayerVersion>2.0.3-skua.1</SkuaPlayerVersion>
         <!-- The skua.5 release names its files without the Mugetsu-<version>- prefix (windows.zip, linux.tar.gz).
              For a release made by the Build Mugetsu workflow, set this to Mugetsu-$(SkuaPlayerVersion)-. -->
         <SkuaPlayerAssetPrefix>Mugetsu-$(SkuaPlayerVersion)-</SkuaPlayerAssetPrefix>
