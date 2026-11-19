@@ -229,14 +229,16 @@ fn detach_window_to_root(
     root: Window,
     was_reparented: bool,
 ) {
+    if was_reparented {
+        // Unmap while still override-redirect and inside parent_xid so ReparentWindow
+        // does not remap it as a WM-decorated top-level window (prevents close flash).
+        let _ = conn.unmap_window(target_win);
+        let _ = conn.reparent_window(target_win, root, 0, 0);
+    }
     let _ = conn.change_window_attributes(
         target_win,
         &ChangeWindowAttributesAux::new().override_redirect(0),
     );
-    if was_reparented {
-        let _ = conn.reparent_window(target_win, root, 0, 0);
-        let _ = conn.unmap_window(target_win);
-    }
     let _ = conn.flush();
 }
 
