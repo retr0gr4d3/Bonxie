@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -28,6 +29,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -49,7 +51,7 @@ public partial class TabbedHostWindow
                 {
                     pipeServer = new NamedPipeServerStream(
                         App.HostPipeName,
-                        PipeDirection.In,
+                        PipeDirection.InOut,
                         NamedPipeServerStream.MaxAllowedServerInstances,
                         PipeTransmissionMode.Byte,
                         PipeOptions.Asynchronous);
@@ -117,18 +119,29 @@ public partial class TabbedHostWindow
                             }
                             else
                             {
+                                bool launchRequest = line.StartsWith("LAUNCH|", StringComparison.Ordinal);
+                                string requestPayload = launchRequest ? line["LAUNCH|".Length..] : line;
                                 string[]? parsedArgs = null;
                                 try
                                 {
-                                    if (line.TrimStart().StartsWith("["))
-                                    {
-                                        parsedArgs = System.Text.Json.JsonSerializer.Deserialize<string[]>(line);
-                                    }
+                                    if (launchRequest || requestPayload.TrimStart().StartsWith("["))
+                                        parsedArgs = JsonSerializer.Deserialize<string[]>(requestPayload);
                                 }
-                                catch { }
+                                catch (JsonException) { }
 
-                                parsedArgs ??= ParseRawCommandLine(line);
-                                Dispatcher.UIThread.Post(() => AddNewInstance(parsedArgs));
+                                if (launchRequest)
+                                {
+                                    bool queued = parsedArgs is not null
+                                        && await Dispatcher.UIThread.InvokeAsync(() => AddNewInstance(parsedArgs));
+                                    using StreamWriter writer = new(pipeServer, System.Text.Encoding.UTF8, 1024, leaveOpen: true);
+                                    await writer.WriteLineAsync(queued ? "ACK" : "NACK");
+                                    await writer.FlushAsync();
+                                }
+                                else
+                                {
+                                    parsedArgs ??= ParseRawCommandLine(line);
+                                    Dispatcher.UIThread.Post(() => AddNewInstance(parsedArgs));
+                                }
                             }
                         }
                     }

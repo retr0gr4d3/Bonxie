@@ -223,6 +223,13 @@ public class SharedSettings
 
 public class ClientSettings
 {
+    [JsonPropertyName("ServerLatencyThresholdMs")]
+    public int ServerLatencyThresholdMs { get; set; } = 200;
+
+    [JsonPropertyName("ServerLatencyNearThresholdPercent")]
+    public int ServerLatencyNearThresholdPercent { get; set; } = 75;
+
+
     [JsonPropertyName("AnimationFrameRate")]
     public int AnimationFrameRate { get; set; } = 60;
 
@@ -237,6 +244,9 @@ public class ClientSettings
 
     [JsonPropertyName("LogToFile")]
     public bool LogToFile { get; set; } = true;
+    [JsonPropertyName("AutoJumpOnPositionChange")]
+    public bool AutoJumpOnPositionChange { get; set; } = false;
+
     [JsonPropertyName("GrandpaMode")]
     public bool GrandpaMode { get; set; } = false;
 
@@ -269,6 +279,15 @@ public class ClientSettings
 
     [JsonPropertyName("NexusWebhookUrl")]
     public string NexusWebhookUrl { get; set; } = string.Empty;
+
+    [JsonPropertyName("RemoteControlServerEnabled")]
+    public bool RemoteControlServerEnabled { get; set; } = true;
+
+    [JsonPropertyName("RemoteControlPort")]
+    public int RemoteControlPort { get; set; } = 8088;
+
+    [JsonPropertyName("RemoteControlAuthToken")]
+    public string RemoteControlAuthToken { get; set; } = string.Empty;
 
     [JsonPropertyName("WebhookNotifyStarted")]
     public bool WebhookNotifyStarted { get; set; } = true;
@@ -343,6 +362,8 @@ public class ClientSettings
         StatsRateUnit = string.IsNullOrWhiteSpace(StatsRateUnit) ? "/hr" : StatsRateUnit;
         StatsRateHistory ??= new();
         InventoryGoals ??= new();
+        if (RemoteControlPort <= 0)
+            RemoteControlPort = 8088;
 
         if (FastTravels == null || FastTravels.Count == 0)
         {
@@ -428,6 +449,12 @@ public class ManagerSettings
 
     [JsonPropertyName("AutoStartScript")]
     public bool AutoStartScript { get; set; } = false;
+
+    [JsonPropertyName("SchedulerAutoStart")]
+    public bool SchedulerAutoStart { get; set; } = true;
+
+    [JsonPropertyName("SchedulerUse24HourTime")]
+    public bool SchedulerUse24HourTime { get; set; } = false;
 
     [JsonExtensionData]
     public Dictionary<string, object>? ExtensionData { get; set; }

@@ -132,9 +132,8 @@ public abstract class DialogServiceBase : IDialogService
             Width = 420,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.Manual,
-            SystemDecorations = SystemDecorations.BorderOnly,
+            WindowDecorations = WindowDecorations.BorderOnly,
             ExtendClientAreaToDecorationsHint = true,
-            ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome,
             ExtendClientAreaTitleBarHeightHint = 32,
             CanResize = false,
             ShowActivated = true,
@@ -185,18 +184,31 @@ public abstract class DialogServiceBase : IDialogService
         return rootBorder;
     }
 
-    protected static void Show(Window dialog)
+    // initialFocus: the control that takes focus when the dialog opens (e.g. an input box); otherwise the default button.
+    protected void Show(Window dialog, Control? initialFocus = null)
     {
-        Skua.Shared.Avalonia.Services.WindowPlacementHelper.CenterOnActiveScreen(dialog);
+        Skua.Shared.Avalonia.Services.PointerCaptureReset.Release();
 
         Window? owner = GetOwner();
+        PlaceDialog(dialog, owner);
         if (owner != null)
         {
-            ShowModalAndBlock(dialog, owner);
+            ShowModalAndBlock(dialog, owner, initialFocus);
             return;
         }
 
-        ShowAndBlock(dialog);
+        ShowAndBlock(dialog, initialFocus);
+    }
+
+    /// <summary>Positions <paramref name="dialog"/> before it opens; <paramref name="owner"/> is null when it has none.</summary>
+    protected virtual void PlaceDialog(Window dialog, Window? owner)
+    {
+        Skua.Shared.Avalonia.Services.WindowPlacementHelper.CenterOnActiveScreen(dialog);
+    }
+
+    /// <summary>Runs as a dialog opens, before it takes focus.</summary>
+    protected virtual void OnDialogOpened(Window dialog)
+    {
     }
 
     protected static Window? GetOwner()
@@ -215,11 +227,11 @@ public abstract class DialogServiceBase : IDialogService
         return (desktop.MainWindow?.IsVisible == true && desktop.MainWindow.Position.X > -10000) ? desktop.MainWindow : null;
     }
 
-    protected static void ShowModalAndBlock(Window dialog, Window owner)
+    protected void ShowModalAndBlock(Window dialog, Window owner, Control? initialFocus)
     {
         using CancellationTokenSource closedCts = new();
         void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
+        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog, initialFocus);
 
         dialog.Closed += OnClosed;
         dialog.Opened += OnOpened;
@@ -240,11 +252,11 @@ public abstract class DialogServiceBase : IDialogService
         }
     }
 
-    protected static void ShowAndBlock(Window dialog)
+    protected void ShowAndBlock(Window dialog, Control? initialFocus)
     {
         using CancellationTokenSource closedCts = new();
         void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
+        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog, initialFocus);
 
         dialog.Closed += OnClosed;
         dialog.Opened += OnOpened;
@@ -265,10 +277,18 @@ public abstract class DialogServiceBase : IDialogService
         }
     }
 
-    protected static void FocusDefaultDialogAction(Window dialog)
+    protected void FocusDefaultDialogAction(Window dialog, Control? initialFocus)
     {
         dialog.Activate();
+        OnDialogOpened(dialog);
         dialog.Focus();
+        if (initialFocus?.Focus() == true)
+        {
+            // Select any prefilled text (e.g. the last quest ID) so typing replaces it.
+            (initialFocus as TextBox)?.SelectAll();
+            return;
+        }
+
         dialog.GetVisualDescendants()
             .OfType<Button>()
             .FirstOrDefault(b => b.IsDefault)?

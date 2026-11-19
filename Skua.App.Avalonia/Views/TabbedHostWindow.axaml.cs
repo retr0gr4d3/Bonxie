@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -28,6 +29,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -35,15 +37,53 @@ namespace Skua.App.Avalonia.Views;
 
 public partial class TabbedHostWindow : Window
 {
+    private static readonly DataFormat<TabItem> TabItemDataFormat = DataFormat.CreateInProcessFormat<TabItem>("skua-tab-item");
+
     #region Tab State
 
     private class TabInfo
     {
         public Process Process { get; set; } = null!;
         public IntPtr ChildHwnd { get; set; } = IntPtr.Zero;
+        public string? Username { get; set; }
+        public Action<bool>? LaunchCompletion { get; set; }
+        public FileStream? AccountReservation { get; set; }
         public bool IsThrottled { get; set; } = false;
         public bool IsCustomNamed { get; set; } = false;
     }
+
+    private static FileStream? TryAcquireAccountReservation(string username)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "BonxieAccountReservations");
+        string accountKey = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(username.Trim().ToUpperInvariant())));
+        string reservationPath = Path.Combine(directory, $"{accountKey}.lock");
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            FileStream reservation = new(reservationPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            reservation.SetLength(0);
+            using (StreamWriter writer = new(reservation, System.Text.Encoding.UTF8, 1024, leaveOpen: true))
+            {
+                writer.WriteLine($"{Environment.ProcessId}|{DateTime.UtcNow:O}");
+                writer.Flush();
+            }
+            reservation.Position = 0;
+            return reservation;
+        }
+        catch (IOException)
+        {
+            // Another Bonxie host currently owns this account reservation.
+            return null;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Trace.WriteLine($"Could not reserve account '{username}': {ex.Message}");
+            return null;
+        }
+    }
+
+    public static TabbedHostWindow? Instance { get; private set; }
 
     private readonly string[] _initialArgs;
     private bool _initialInstanceStarted = false;
@@ -57,6 +97,12 @@ public partial class TabbedHostWindow : Window
     private readonly CancellationTokenSource _pipeCts = new();
     private bool _isGridViewEnabled = false;
     private TabItem? _lastSelectedTab;
+    private enum GridLayoutMode
+    {
+        Auto,
+        Horizontal,
+        Vertical
+    }
     private IntPtr _hostHwnd = IntPtr.Zero;
     private int _lastX = -99999, _lastY = -99999, _lastW = -99999, _lastH = -99999;
     private IntPtr _lastActiveHwnd = IntPtr.Zero;
@@ -82,6 +128,18 @@ public partial class TabbedHostWindow : Window
 
     private Queue<Action> _spawnQueue = new Queue<Action>();
     private bool _isSpawning = false;
+    private readonly List<(string Username, string DisplayName)> _quickLaunchAccounts = new();
+    private readonly List<GroupData> _quickLaunchGroups = new();
+    private readonly HashSet<string> _quickLaunchSelection = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _quickLaunchPending = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<Action<bool>>> _quickLaunchPendingCallbacks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _quickLaunchFailed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (Border Bubble, TextBlock Text)> _quickLaunchStatusBubbles = new(StringComparer.OrdinalIgnoreCase);
+    private int _quickLaunchBatchId;
+    private int _quickLaunchBatchTotal;
+    private int _quickLaunchBatchCompleted;
+    private int _quickLaunchBatchAlreadyOpen;
+    private int _quickLaunchBatchFailed;
 
     private void EnqueueSpawn(Action spawnAction)
     {
@@ -149,6 +207,8 @@ public partial class TabbedHostWindow : Window
     {
         _initialArgs = initialArgs ?? Array.Empty<string>();
         InitializeComponent();
+        HotKeys.RegisterHotkey("OpenQuickLaunch", new CommunityToolkit.Mvvm.Input.RelayCommand(OpenQuickLaunch));
+        AccountQuickLaunchSearch.KeyDown += AccountQuickLaunchSearch_KeyDown;
         LoadArmyJumpSettings();
         Title = "Bonxie Beta 7";
         MainTitleBar.TitleText = Title;
@@ -177,6 +237,12 @@ public partial class TabbedHostWindow : Window
         var options = Ioc.Default.GetRequiredService<IScriptOption>();
         MiscOptionsMenu.DataContext = options;
         options.PropertyChanged += Options_PropertyChanged;
+        // ShowFPS reads ui.mcFPS.visible from Flash, which the host doesn't have, so the host keeps this toggle's state itself.
+        MenuShowFps.PropertyChanged += (s, e) =>
+        {
+            if (e.Property == MenuItem.IsCheckedProperty)
+                BroadcastOption(11, MenuShowFps.IsChecked);
+        };
 
         Opened += TabbedHostWindow_Opened;
         PositionChanged += (s, e) => OnWindowPositionChanged(e.Point);
@@ -187,6 +253,30 @@ public partial class TabbedHostWindow : Window
         Activated += (s, e) => { ScheduleReposition(); UpdateTabScrollButtons(); };
         Closing += OnWindowClosing;
         Closed += OnWindowClosed;
+
+        Instance = this;
+        try
+        {
+            var remote = Ioc.Default.GetService<IRemoteControlService>();
+            if (remote != null)
+            {
+                remote.ActiveChildPidProvider = () => GetActiveChildPid();
+                remote.SelectChildPidAction = pid => SelectTabByPid(pid);
+                remote.FocusChildPidAction = pid => FocusTabByPid(pid);
+                remote.CloseChildPidAction = pid => CloseTabByPid(pid);
+                remote.LaunchAccountAction = (user, pass, srv) => LaunchAccount(user, pass, srv);
+                remote.LaunchGroupAction = group => LaunchGroup(group);
+                remote.StartAllScriptsAction = () => StartAllScripts();
+                remote.StopAllScriptsAction = () => StopAllScripts();
+                remote.LoadScriptAllAction = path => BroadcastScriptAction(path, WM_SKUA_LOAD_SCRIPT);
+                remote.HeadlessAllAction = enabled => HeadlessAll(enabled);
+                remote.ReloginAllAction = () => ReloginAll();
+                remote.BroadcastArmySchedulerAction = playlistJson => BroadcastArmyScheduler(playlistJson);
+                remote.StopArmySchedulerAction = () => StopArmyScheduler();
+                remote.TabsInfoProvider = () => GetTabsInfoList();
+            }
+        }
+        catch { }
 
         StrongReferenceMessenger.Default.Register<TabbedHostWindow, LoadScriptMessage, int>(this, (int)MessageChannels.ScriptStatus, (r, m) => r.BroadcastScriptAction(m.Path, WM_SKUA_LOAD_SCRIPT));
         StrongReferenceMessenger.Default.Register<TabbedHostWindow, ScriptSchedulerViewModel.ArmySchedulerMessage>(this, (r, m) => r.OnArmySchedulerStart(m));
@@ -229,6 +319,7 @@ public partial class TabbedHostWindow : Window
     {
         if (_isClosing || _tabs.Count == 0) return;
 
+        UpdateQuickLaunchStatuses();
         var entries = _tabs.Select(kvp => (Tab: kvp.Key, Pid: kvp.Value?.Process?.Id ?? 0)).ToList();
 
         Task.Run(() =>
@@ -238,6 +329,7 @@ public partial class TabbedHostWindow : Window
 
             var updates = new List<(TabItem Tab, string Username)>();
             var locations = new List<(int Pid, ArmyClientLocation Location)>();
+            var loggedOutPids = new List<int>();
 
             foreach (var (tab, pid) in entries)
             {
@@ -247,15 +339,32 @@ public partial class TabbedHostWindow : Window
                     string file = Path.Combine(dir, $"{pid}.txt");
                     if (File.Exists(file))
                     {
-                        string username = File.ReadAllText(file).Trim();
-                        if (!string.IsNullOrWhiteSpace(username))
-                            updates.Add((tab, username));
+                        using Process process = Process.GetProcessById(pid);
+                        if (!process.HasExited
+                            && string.Equals(process.ProcessName, Process.GetCurrentProcess().ProcessName, StringComparison.OrdinalIgnoreCase)
+                            && File.GetLastWriteTimeUtc(file) >= process.StartTime.ToUniversalTime())
+                        {
+                            string username = File.ReadAllText(file).Trim();
+                            if (!string.IsNullOrWhiteSpace(username))
+                                updates.Add((tab, username));
+                        }
                     }
 
                     string locationFile = Path.Combine(dir, $"{pid}.location.json");
                     if (File.Exists(locationFile))
                     {
-                        ArmyClientLocation? location = JsonSerializer.Deserialize<ArmyClientLocation>(File.ReadAllText(locationFile));
+                        string locationJson = File.ReadAllText(locationFile);
+                        using JsonDocument locationDocument = JsonDocument.Parse(locationJson);
+                        if (locationDocument.RootElement.TryGetProperty("LoggedIn", out JsonElement loggedIn)
+                            && loggedIn.ValueKind == JsonValueKind.False)
+                        {
+                            loggedOutPids.Add(pid);
+                            // Clear the shared identity record so every host stops treating this
+                            // still-open but logged-out client as an active account.
+                            File.WriteAllText(Path.Combine(dir, $"{pid}.txt"), string.Empty);
+                        }
+
+                        ArmyClientLocation? location = JsonSerializer.Deserialize<ArmyClientLocation>(locationJson);
                         if (location != null
                             && !string.IsNullOrWhiteSpace(location.Map)
                             && location.UpdatedUtc >= DateTime.UtcNow.AddSeconds(-5))
@@ -265,19 +374,42 @@ public partial class TabbedHostWindow : Window
                 catch { }
             }
 
-            if ((updates.Count > 0 || locations.Count > 0) && !_isClosing)
+            if ((updates.Count > 0 || locations.Count > 0 || loggedOutPids.Count > 0) && !_isClosing)
             {
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (_isClosing) return;
+
+                    foreach (int pid in loggedOutPids)
+                    {
+                        TabInfo? tabInfo = _tabs.Values.FirstOrDefault(info => info.Process?.Id == pid);
+                        tabInfo?.AccountReservation?.Dispose();
+                        if (tabInfo is not null)
+                            tabInfo.AccountReservation = null;
+
+                        updates.RemoveAll(update =>
+                            _tabs.TryGetValue(update.Tab, out TabInfo? updateInfo)
+                            && updateInfo.Process?.Id == pid);
+                    }
 
                     foreach (var (pid, location) in locations)
                         RecordClientLocation(pid, location);
 
                     foreach (var (tab, username) in updates)
                     {
-                        if (_tabs.TryGetValue(tab, out TabInfo? tInfo) && tInfo.IsCustomNamed)
-                            continue;
+                        if (_tabs.TryGetValue(tab, out TabInfo? tInfo))
+                        {
+                            // Complete the request when the process reports its logged-in identity.
+                            if (tInfo.LaunchCompletion != null)
+                                CompleteTabLaunch(tInfo, string.Equals(tInfo.Username, username, StringComparison.OrdinalIgnoreCase));
+
+                            // Keep the actual logged-in identity even when the tab has a custom display name.
+                            tInfo.Username = username;
+                            if (tInfo.AccountReservation is null)
+                                tInfo.AccountReservation = TryAcquireAccountReservation(username);
+                            if (tInfo.IsCustomNamed)
+                                continue;
+                        }
 
                         if (tab.Header is StackPanel headerPanel)
                         {
@@ -305,6 +437,11 @@ public partial class TabbedHostWindow : Window
             HotKeys.HostHwnd = _hostHwnd;
             _subclassProc = HostWindowSubclassProc;
             SetWindowSubclass(_hostHwnd, _subclassProc, 1, IntPtr.Zero);
+
+            // Clicking a tab's game window activates it, and Windows lifts it above an open host dialog.
+            _foregroundHookProc = OnForegroundChanged;
+            _foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero,
+                _foregroundHookProc, 0, 0, WINEVENT_OUTOFCONTEXT);
         }
 
         HotKeys.RegisterSkuaPid((uint)Environment.ProcessId);
@@ -351,6 +488,8 @@ public partial class TabbedHostWindow : Window
 
         try
         {
+            Services.HotKeyService.ToggleFullscreenRequested = () => Dispatcher.UIThread.Post(() => ToggleFullScreen());
+            Services.HotKeyService.ToggleGameFullScreenRequested = () => Dispatcher.UIThread.Post(ToggleGameOnly);
             Ioc.Default.GetRequiredService<IHotKeyService>().Reload();
         }
         catch { }
@@ -450,6 +589,20 @@ public partial class TabbedHostWindow : Window
             return IntPtr.Zero;
         }
 
+        // A tab changed ShowFPS itself (hotkey, its options window, a script): match the checkbox, which re-broadcasts
+        // it to every tab.
+        if (uMsg == WM_SKUA_CHILD_OPTION)
+        {
+            int optionId = wParam.ToInt32();
+            bool value = lParam.ToInt32() == 1;
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (!_isClosing && optionId == 11)
+                    MenuShowFps.IsChecked = value;
+            });
+            return IntPtr.Zero;
+        }
+
         // A child moved onto a monitor with another scale may have resized itself. Its new size is invisible to the
         // position cache, so place it again.
         if (uMsg == WM_SKUA_CHILD_DPICHANGED)
@@ -482,6 +635,80 @@ public partial class TabbedHostWindow : Window
         return DefSubclassProc(hWnd, uMsg, wParam, lParam);
     }
 
+    private WindowState _stateBeforeFullScreen = WindowState.Normal;
+    private bool _gameOnly;
+    private bool _gameOnlySetFullScreen;
+
+    /// <summary>F11: the tab window goes borderless full screen, and back to what it was (it also ends game-only full screen).</summary>
+    private void ToggleFullScreen(bool keepGameOnly = false)
+    {
+        bool wasGameOnly = _gameOnly && !keepGameOnly;
+        if (wasGameOnly)
+            _gameOnlySetFullScreen = false;
+
+        if (WindowState == WindowState.FullScreen)
+        {
+            WindowState = (_stateBeforeFullScreen == WindowState.FullScreen || _stateBeforeFullScreen == WindowState.Minimized)
+                ? WindowState.Normal
+                : _stateBeforeFullScreen;
+            if (wasGameOnly)
+                ApplyGameOnly(false);
+            return;
+        }
+        _stateBeforeFullScreen = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+        WindowState = WindowState.FullScreen;
+        if (wasGameOnly)
+            ApplyGameOnly(false);
+    }
+
+    /// <summary>Shift+F11: full screen with only the game. The title bar, the tab bar, and every client's menu are hidden;
+    /// leaving it puts the window back as it was.</summary>
+    private void ToggleGameOnly()
+    {
+        if (_gameOnly)
+        {
+            if (_gameOnlySetFullScreen && WindowState == WindowState.FullScreen)
+                ToggleFullScreen(keepGameOnly: true);
+            _gameOnlySetFullScreen = false;
+            ApplyGameOnly(false);
+            return;
+        }
+        _gameOnlySetFullScreen = WindowState != WindowState.FullScreen;
+        if (_gameOnlySetFullScreen)
+            ToggleFullScreen(keepGameOnly: true);
+        ApplyGameOnly(true);
+    }
+
+    private void ApplyGameOnly(bool on)
+    {
+        _gameOnly = on;
+        if (on)
+            RootGrid.RowDefinitions = new RowDefinitions("0,0,*");
+        else
+            RootGrid.RowDefinitions = new RowDefinitions("32,Auto,*");
+
+        MainTitleBar.IsVisible = !on;
+        TabBarBorder.IsVisible = !on;
+        if (!on)
+        {
+            MainTitleBar.InvalidateMeasure();
+            MainTitleBar.InvalidateVisual();
+            RootGrid.InvalidateMeasure();
+            RootGrid.InvalidateArrange();
+        }
+
+        foreach (var info in _tabs.Values)
+            if (info.ChildHwnd != IntPtr.Zero)
+                PostMessage(info.ChildHwnd, WM_SKUA_GAMEONLY, new IntPtr(on ? 1 : 0), IntPtr.Zero);
+
+        _lastX = int.MinValue;
+        _lastY = int.MinValue;
+        _lastW = int.MinValue;
+        _lastH = int.MinValue;
+        _lastActiveHwnd = IntPtr.Zero;
+        Dispatcher.UIThread.Post(DoReposition, DispatcherPriority.Background);
+    }
+
     private void AttachChildWindow(TabInfo info, IntPtr childHwnd)
     {
         if (info.ChildHwnd != IntPtr.Zero) return;
@@ -497,20 +724,91 @@ public partial class TabbedHostWindow : Window
         SetWindowLong(childHwnd, GWL_EXSTYLE, exStyle);
         SetWindowLongAny(childHwnd, GWL_HWNDPARENT, _hostHwnd);
 
+        if (_gameOnly)
+            PostMessage(childHwnd, WM_SKUA_GAMEONLY, new IntPtr(1), IntPtr.Zero);
+
         if (_isGridViewEnabled)
         {
             PostMessage(childHwnd, WM_SKUA_GRIDVIEW, new IntPtr(1), IntPtr.Zero);
         }
 
+        // The tab re-applies it after it logs in (ScriptOption), so sending it before login is enough.
+        if (MenuShowFps.IsChecked)
+            PostMessage(childHwnd, WM_SKUA_SET_OPTION, new IntPtr(11), new IntPtr(1));
+
         DoReposition();
+        KeepGameWindowsBelowHostWindows();
 
         _isSpawning = false;
         ProcessNextSpawn();
     }
 
+    /// <summary>
+    /// Places the tabs' game windows directly below the host's own windows (message boxes and other dialogs).
+    /// The game windows belong to the tab processes but are owned by the host, so they share a z-order band with the
+    /// host's dialogs. A game window that attaches after a dialog opened, or a dialog opened while the client has no
+    /// foreground rights, otherwise leaves the modal dialog hidden behind the game and the client looks frozen.
+    /// </summary>
+    /// <summary>A modal dialog disables its owner, so a disabled host means one of its dialogs is open.</summary>
+    private bool IsHostModalOpen => _hostHwnd != IntPtr.Zero && !IsWindowEnabled(_hostHwnd);
+
+    private void OnForegroundChanged(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint idEventThread, uint dwmsEventTime)
+    {
+        if (_isClosing || hwnd == IntPtr.Zero || !IsHostModalOpen)
+            return;
+
+        GetWindowThreadProcessId(hwnd, out uint pid);
+        if (_tabs.Values.Any(t => t.Process != null && !t.Process.HasExited && (uint)t.Process.Id == pid))
+            KeepGameWindowsBelowHostWindows();
+    }
+
+    public void KeepGameWindowsBelowHostWindows()
+    {
+        if (_hostHwnd == IntPtr.Zero
+            || Application.Current?.ApplicationLifetime is not global::Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
+            return;
+
+        HashSet<IntPtr> hostWindows = new();
+        foreach (Window window in desktop.Windows)
+        {
+            if (window == this || !window.IsVisible)
+                continue;
+            IntPtr hwnd = window.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            if (hwnd != IntPtr.Zero)
+                hostWindows.Add(hwnd);
+        }
+        if (hostWindows.Count == 0)
+            return;
+
+        // Owned windows sit above their owner, so the first host window found walking up from the host is the lowest.
+        IntPtr lowest = IntPtr.Zero;
+        IntPtr cursor = _hostHwnd;
+        for (int i = 0; i < 256 && lowest == IntPtr.Zero; i++)
+        {
+            cursor = GetWindow(cursor, GW_HWNDPREV);
+            if (cursor == IntPtr.Zero)
+                break;
+            if (hostWindows.Contains(cursor))
+                lowest = cursor;
+        }
+        if (lowest == IntPtr.Zero)
+            return;
+
+        foreach (TabInfo info in _tabs.Values)
+        {
+            if (info.ChildHwnd != IntPtr.Zero)
+                SetWindowPos(info.ChildHwnd, lowest, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
     private void OnWindowClosing(object? sender, WindowClosingEventArgs e)
     {
         _isClosing = true;
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            UnhookWinEvent(_foregroundHook);
+            _foregroundHook = IntPtr.Zero;
+        }
         App.DisposeTrayIcon();
         try { _pipeCts.Cancel(); } catch { }
 
@@ -530,6 +828,7 @@ public partial class TabbedHostWindow : Window
                 }
                 try { File.Delete(TabHostFiles.UsernameOf(info.Process.Id)); } catch { }
                 try { File.Delete(TabHostFiles.LocationOf(info.Process.Id)); } catch { }
+                try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.remote.txt")); } catch { }
                 _latestClientLocations.Remove(info.Process.Id);
                 _lastRecordedLocationByPid.Remove(info.Process.Id);
             }
@@ -539,6 +838,7 @@ public partial class TabbedHostWindow : Window
 
     private void OnWindowClosed(object? sender, EventArgs e)
     {
+        Instance = null;
         App.DisposeTrayIcon();
         try
         {

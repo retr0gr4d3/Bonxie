@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -28,6 +29,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -125,11 +127,14 @@ public partial class TabbedHostWindow
         }
 
         if (optionId != -1)
-        {
-            foreach (var info in _tabs.Values)
-                if (info.ChildHwnd != IntPtr.Zero)
-                    PostMessage(info.ChildHwnd, WM_SKUA_SET_OPTION, new IntPtr(optionId), new IntPtr(val ? 1 : 0));
-        }
+            BroadcastOption(optionId, val);
+    }
+
+    private void BroadcastOption(int optionId, bool val)
+    {
+        foreach (var info in _tabs.Values)
+            if (info.ChildHwnd != IntPtr.Zero)
+                PostMessage(info.ChildHwnd, WM_SKUA_SET_OPTION, new IntPtr(optionId), new IntPtr(val ? 1 : 0));
     }
 
     private async void MenuItem_StartAllScripts_Click(object? sender, RoutedEventArgs e)

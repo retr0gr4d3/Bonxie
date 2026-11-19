@@ -21,6 +21,10 @@ internal sealed record ClientLaunch
     public bool RunScript { get; init; }
 
     public string? ScriptOptionsStorage { get; init; }
+
+    /// <summary>Playlist to run after login.</summary>
+    public string? PlaylistPath { get; init; }
+
     public bool ExitOnScriptStop { get; init; }
 
     public Process? Start()
@@ -50,6 +54,7 @@ internal sealed record ClientLaunch
         Option(RunScript ? "--run-script" : "--load-script", ScriptPath);
         if (RunScript)
             Option("--script-options-storage", ScriptOptionsStorage);
+        Option("--run-playlist", PlaylistPath);
         if (ExitOnScriptStop)
             info.ArgumentList.Add("--exit-on-script-stop");
 

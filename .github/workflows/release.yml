@@ -27,6 +27,16 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Set up Java 8 for Apache Flex
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Install Apache Flex SDK
+        shell: pwsh
+        run: ./Skua.AS3/Setup-Flex.ps1
+
       - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
@@ -59,9 +69,35 @@ jobs:
           INPUT_VERSION: ${{ github.event.inputs.version }}
 
       - name: Build Project & Assemble Output
-        shell: cmd
+        shell: pwsh
         run: |
-          call BuildProject.bat --no-pause
+          dotnet restore Skua.sln
+          if ($LASTEXITCODE -ne 0) {
+              throw "Solution restore failed with exit code $LASTEXITCODE."
+          }
+
+          dotnet build Skua.sln --configuration Release --no-restore --verbosity minimal
+          if ($LASTEXITCODE -ne 0) {
+              throw "Solution build failed with exit code $LASTEXITCODE."
+          }
+
+          ./BuildTools/package-build.ps1
+
+      - name: Verify bundled FFDec Java runtime
+        shell: pwsh
+        run: |
+          $javaPath = Join-Path $PWD "Build/FFDec/Runtime/bin/java.exe"
+          if (-not (Test-Path $javaPath)) {
+            throw "The portable FFDec Java runtime was not staged: $javaPath"
+          }
+          $javaStdOut = Join-Path $env:RUNNER_TEMP "ffdec-java-version.stdout.txt"
+          $javaStdErr = Join-Path $env:RUNNER_TEMP "ffdec-java-version.stderr.txt"
+          $javaProcess = Start-Process -FilePath $javaPath -ArgumentList "-version" -Wait -PassThru -NoNewWindow -RedirectStandardOutput $javaStdOut -RedirectStandardError $javaStdErr
+          $javaVersion = ((Get-Content $javaStdOut -Raw -ErrorAction SilentlyContinue) + (Get-Content $javaStdErr -Raw -ErrorAction SilentlyContinue)).Trim()
+          if ($javaProcess.ExitCode -ne 0 -or $javaVersion -notmatch 'version "21(?:\.|")') {
+            throw "The portable FFDec Java runtime failed its startup check (exit code $($javaProcess.ExitCode)): $javaVersion"
+          }
+          Write-Host $javaVersion
 
       - name: Package Release with Velopack
         shell: pwsh
@@ -82,9 +118,24 @@ jobs:
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
           $tag = "${{ steps.get_version.outputs.tag }}"
-          $files = Get-ChildItem -Path "Build\Releases" -File | ForEach-Object FullName
+          $files = @(Get-ChildItem -Path "Build\Releases" -File | ForEach-Object FullName)
           if (-not $files) {
               throw "No release artifacts were found in Build\Releases."
+          }
+
+          $rootApk = Join-Path $PWD "skua-remote.apk"
+          if (Test-Path $rootApk) {
+              Write-Host "Adding root APK to release assets: $rootApk"
+              $files += $rootApk
+          } else {
+              $anyApk = Get-ChildItem -Path "." -Filter "*.apk" -File | Select-Object -First 1
+              if ($anyApk) {
+                  Write-Host "Adding APK to release assets: $($anyApk.FullName)"
+                  $files += $anyApk.FullName
+              } elseif (Test-Path "Skua.App.Android\skua-remote.apk") {
+                  Write-Host "Adding Android APK to release assets: Skua.App.Android\skua-remote.apk"
+                  $files += (Resolve-Path "Skua.App.Android\skua-remote.apk").Path
+              }
           }
 
           Write-Host "Publishing assets to tag $tag..."
@@ -112,7 +163,9 @@ jobs:
               gh release upload $tag $files --clobber
               if ($LASTEXITCODE -ne 0) { throw "Failed to upload release assets." }
               if (Test-Path $notesFile) {
-                  gh release edit $tag --notes-file $notesFile
+                  gh release edit $tag --notes-file $notesFile --draft=false
+              } else {
+                  gh release edit $tag --draft=false
               }
           } else {
               Write-Host "Creating new release for $tag..."

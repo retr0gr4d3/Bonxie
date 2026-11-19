@@ -151,9 +151,8 @@ public class WindowService : IWindowService
         Window window = new()
         {
             Title = title,
-            SystemDecorations = SystemDecorations.BorderOnly,
+            WindowDecorations = WindowDecorations.BorderOnly,
             ExtendClientAreaToDecorationsHint = true,
-            ExtendClientAreaChromeHints = global::Avalonia.Platform.ExtendClientAreaChromeHints.NoChrome,
             ExtendClientAreaTitleBarHeightHint = 32,
             WindowStartupLocation = startupLoc,
             SizeToContent = sizeToContent,
@@ -183,6 +182,8 @@ public class WindowService : IWindowService
             window.Height = height;
             window.MinHeight = Math.Min(height, 300);
         }
+
+        Skua.Shared.Avalonia.Services.WindowPlacementHelper.FitToWorkingArea(window);
 
         // Size first, then place: centring a window whose size is still unknown puts it in the wrong spot
         // and it visibly jumps once Opened corrects it.

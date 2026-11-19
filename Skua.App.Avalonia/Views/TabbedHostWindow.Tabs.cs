@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -28,6 +29,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -45,6 +47,7 @@ public partial class TabbedHostWindow
 
         if (_tabs.TryGetValue(tab, out TabInfo? info))
         {
+            CompleteTabLaunch(info, false);
             _tabs.Remove(tab);
             Task.Run(() =>
             {
@@ -57,6 +60,8 @@ public partial class TabbedHostWindow
                     if (info.Process != null)
                     {
                         try { File.Delete(TabHostFiles.UsernameOf(info.Process.Id)); } catch { }
+                        try { File.Delete(TabHostFiles.LocationOf(info.Process.Id)); } catch { }
+                        try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.remote.txt")); } catch { }
                     }
                 }
                 catch { }
@@ -112,7 +117,7 @@ public partial class TabbedHostWindow
         AddNewInstance(ParseRawCommandLine(rawArgs));
     }
 
-    public void AddNewInstance(string[]? clientArgs = null)
+    public bool AddNewInstance(string[]? clientArgs = null, Action<bool>? launchCompletion = null)
     {
         clientArgs ??= Array.Empty<string>();
 
@@ -136,13 +141,34 @@ public partial class TabbedHostWindow
         }
 
         string tabName = "User " + availableId;
+        string? accountUsername = null;
         for (int i = 0; i < clientArgs.Length; i++)
         {
             if ((clientArgs[i] == "-u" || clientArgs[i] == "--user") && i + 1 < clientArgs.Length)
             {
                 if (!string.IsNullOrWhiteSpace(clientArgs[i + 1]))
-                    tabName = clientArgs[i + 1];
+                {
+                    accountUsername = clientArgs[i + 1].Trim();
+                    tabName = accountUsername;
+                }
                 break;
+            }
+        }
+
+        FileStream? accountReservation = null;
+        if (!string.IsNullOrWhiteSpace(accountUsername))
+        {
+            if (FindExistingAccountTab(accountUsername) is not null || IsExternalAccountRunning(accountUsername))
+            {
+                launchCompletion?.Invoke(false);
+                return false;
+            }
+
+            accountReservation = TryAcquireAccountReservation(accountUsername);
+            if (accountReservation is null)
+            {
+                launchCompletion?.Invoke(false);
+                return false;
             }
         }
 
@@ -216,7 +242,12 @@ public partial class TabbedHostWindow
         closeBtn.PointerEntered += (s, ev) => { closeTxt.Foreground = Brushes.White; closeBtn.Background = new SolidColorBrush(Color.Parse("#EF4444")); };
         closeBtn.PointerExited += (s, ev) => { closeTxt[!TextBlock.ForegroundProperty] = new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaMutedTextBrush"); closeBtn.Background = Brushes.Transparent; };
 
-        TabInfo info = new TabInfo();
+        TabInfo info = new()
+        {
+            Username = accountUsername,
+            LaunchCompletion = launchCompletion,
+            AccountReservation = accountReservation
+        };
 
         Action closeEditMode = () =>
         {
@@ -285,13 +316,25 @@ public partial class TabbedHostWindow
         {
             if (_isClosing || !_tabs.ContainsKey(newTab))
             {
+                info.AccountReservation?.Dispose();
+                info.AccountReservation = null;
+                CompleteTabLaunch(info, false);
                 _isSpawning = false;
                 ProcessNextSpawn();
                 return;
             }
 
             Process p = new Process();
-            p.StartInfo.FileName = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+            string exePath = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+            if (exePath.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase) || exePath.EndsWith("dotnet", StringComparison.OrdinalIgnoreCase))
+            {
+                p.StartInfo.FileName = exePath;
+                p.StartInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Bonxie.dll"));
+            }
+            else
+            {
+                p.StartInfo.FileName = exePath;
+            }
             p.StartInfo.ArgumentList.Add("--embed");
             p.StartInfo.ArgumentList.Add(_hostHwnd.ToInt64().ToString());
             p.StartInfo.ArgumentList.Add("--host-pid");
@@ -314,10 +357,12 @@ public partial class TabbedHostWindow
             {
                 Dispatcher.UIThread.Post(() =>
                 {
+                    CompleteTabLaunch(info, false);
+                    info.AccountReservation?.Dispose();
+                    info.AccountReservation = null;
                     if (!_isClosing)
-                    {
                         CloseTab(newTab);
-                    }
+                    UpdateQuickLaunchStatuses();
                 });
             };
 
@@ -328,6 +373,9 @@ public partial class TabbedHostWindow
             catch (Exception ex)
             {
                 p.Dispose();
+                CompleteTabLaunch(info, false);
+                info.AccountReservation?.Dispose();
+                info.AccountReservation = null;
                 _isSpawning = false;
                 Trace.WriteLine($"Bonxie failed to start child process for tab '{tabName}': {ex}");
                 Dispatcher.UIThread.Post(() =>
@@ -340,6 +388,28 @@ public partial class TabbedHostWindow
             }
 
             info.Process = p;
+
+            // A client that never reports a logged-in identity must not hold the account
+            // reservation forever. Terminate the stalled child so a retry can acquire it.
+            if (!string.IsNullOrWhiteSpace(accountUsername))
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(3));
+                    if (p.HasExited || !string.IsNullOrWhiteSpace(GetProcessLoggedInUsername(info)))
+                        return;
+
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (p.HasExited || !string.IsNullOrWhiteSpace(GetProcessLoggedInUsername(info)))
+                            return;
+
+                        CompleteTabLaunch(info, false);
+                        try { p.Kill(entireProcessTree: true); } catch { }
+                    });
+                });
+            }
+
             try
             {
                 EnsureChildJobObject();
@@ -448,6 +518,7 @@ public partial class TabbedHostWindow
         newTab.ContextMenu = ctx;
 
         Point startPoint = new Point();
+        PointerPressedEventArgs? dragStartEvent = null;
         headerPanel.PointerPressed += (s, ev) =>
         {
             var prop = ev.GetCurrentPoint(headerPanel).Properties;
@@ -461,6 +532,7 @@ public partial class TabbedHostWindow
                 return;
 
             startPoint = ev.GetPosition(null);
+            dragStartEvent = ev;
             InstancesTabControl.SelectedItem = newTab;
 
             if (_isGridViewEnabled)
@@ -487,6 +559,8 @@ public partial class TabbedHostWindow
             }
         };
 
+        headerPanel.PointerReleased += (s, ev) => dragStartEvent = null;
+
         headerPanel.PointerMoved += async (s, ev) =>
         {
             if (editTitle.IsVisible) return;
@@ -495,32 +569,417 @@ public partial class TabbedHostWindow
             {
                 Point mousePos = ev.GetPosition(null);
                 Vector diff = startPoint - mousePos;
-                if (Math.Abs(diff.X) > 4 || Math.Abs(diff.Y) > 4)
+                if ((Math.Abs(diff.X) > 4 || Math.Abs(diff.Y) > 4) && dragStartEvent is { } dragStart)
                 {
-                    var dragData = new global::Avalonia.Input.DataObject();
-                    dragData.Set("TabItem", newTab);
-                    await DragDrop.DoDragDrop(ev, dragData, DragDropEffects.Move);
+                    dragStartEvent = null;
+                    DataTransfer dragData = new();
+                    dragData.Add(DataTransferItem.Create(TabItemDataFormat, newTab));
+                    await DragDrop.DoDragDropAsync(dragStart, dragData, DragDropEffects.Move);
                 }
             }
         };
 
         newTab.AddHandler(DragDrop.DropEvent, (s, ev) =>
         {
-            if (ev.Data.Contains("TabItem"))
+            if (ev.DataTransfer.TryGetValue(TabItemDataFormat) is TabItem droppedTab && droppedTab != newTab)
             {
-                TabItem? droppedTab = ev.Data.Get("TabItem") as TabItem;
-                if (droppedTab != null && droppedTab != newTab)
-                {
-                    int targetIndex = InstancesTabControl.Items.IndexOf(newTab);
-                    InstancesTabControl.Items.Remove(droppedTab);
-                    InstancesTabControl.Items.Insert(targetIndex, droppedTab);
-                    InstancesTabControl.SelectedItem = droppedTab;
-                }
+                int targetIndex = InstancesTabControl.Items.IndexOf(newTab);
+                InstancesTabControl.Items.Remove(droppedTab);
+                InstancesTabControl.Items.Insert(targetIndex, droppedTab);
+                InstancesTabControl.SelectedItem = droppedTab;
             }
         });
 
         #endregion Tab Interactions
+        return true;
     }
+
+    #region Remote Control Gateway Helpers
+
+    public int GetActiveChildPid()
+    {
+        try
+        {
+            if (!Dispatcher.UIThread.CheckAccess())
+            {
+                return Dispatcher.UIThread.Invoke(() => GetActiveChildPid());
+            }
+
+            string dir = TabHostFiles.TabsDirectory;
+
+            bool IsTabAuthenticated(int pid)
+            {
+                try
+                {
+                    string userFile = Path.Combine(dir, $"{pid}.txt");
+                    if (File.Exists(userFile))
+                    {
+                        string u = File.ReadAllText(userFile).Trim();
+                        if (!string.IsNullOrWhiteSpace(u) && !u.StartsWith("User ") && !u.StartsWith("Skua "))
+                            return true;
+                    }
+                    string locFile = Path.Combine(dir, $"{pid}.location.json");
+                    if (File.Exists(locFile))
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(locFile));
+                        if (doc.RootElement.TryGetProperty("LoggedIn", out var li) && li.GetBoolean())
+                            return true;
+                    }
+                }
+                catch { }
+                return false;
+            }
+
+            // 1. If currently selected tab is alive and has an active login session, use it
+            if (InstancesTabControl.SelectedItem is TabItem selTab &&
+                _tabs.TryGetValue(selTab, out TabInfo? info) &&
+                info.Process != null && !info.Process.HasExited &&
+                IsTabAuthenticated(info.Process.Id))
+            {
+                return info.Process.Id;
+            }
+
+            // 2. Check all tabs for any that has an active logged-in character
+            foreach (var tabInfo in _tabs.Values)
+            {
+                if (tabInfo.Process != null && !tabInfo.Process.HasExited && IsTabAuthenticated(tabInfo.Process.Id))
+                {
+                    return tabInfo.Process.Id;
+                }
+            }
+
+            // 3. Fallback to currently selected tab even if unauthenticated
+            if (InstancesTabControl.SelectedItem is TabItem selTab2 &&
+                _tabs.TryGetValue(selTab2, out TabInfo? info2) &&
+                info2.Process != null && !info2.Process.HasExited)
+            {
+                return info2.Process.Id;
+            }
+
+            // 4. Fallback to any alive tab
+            foreach (var tabInfo in _tabs.Values)
+            {
+                if (tabInfo.Process != null && !tabInfo.Process.HasExited)
+                    return tabInfo.Process.Id;
+            }
+        }
+        catch { }
+
+        return 0;
+    }
+
+    public void SelectTabByPid(int pid)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var kvp in _tabs)
+            {
+                if (kvp.Value?.Process != null && kvp.Value.Process.Id == pid)
+                {
+                    InstancesTabControl.SelectedItem = kvp.Key;
+                    break;
+                }
+            }
+        });
+    }
+
+    public void FocusTabByPid(int pid)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            SelectTabByPid(pid);
+            try
+            {
+                if (WindowState == WindowState.Minimized)
+                    WindowState = WindowState.Normal;
+                Show();
+                Activate();
+                Topmost = true;
+                Topmost = false;
+                Focus();
+            }
+            catch { }
+        });
+    }
+
+    public bool CloseTabByPid(int pid)
+    {
+        return Dispatcher.UIThread.Invoke(() =>
+        {
+            foreach (var kvp in _tabs)
+            {
+                if (kvp.Value?.Process != null && kvp.Value.Process.Id == pid)
+                {
+                    CloseTab(kvp.Key);
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    public void LaunchAccount(string username, string? password = null, string? server = null, Action<bool>? onCompleted = null)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (FindExistingAccountTab(username) is TabItem existingTab)
+            {
+                FocusAccountTab(existingTab);
+                onCompleted?.Invoke(true);
+                return;
+            }
+
+            ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+            settings.ReloadSettings();
+            Dictionary<string, AccountData>? accs = settings.Get<Dictionary<string, AccountData>>("ManagedAccounts");
+            string pass = password ?? string.Empty;
+            if (string.IsNullOrEmpty(pass) && accs != null && accs.TryGetValue(username, out var acc))
+            {
+                pass = acc.Password ?? string.Empty;
+            }
+            if (!string.IsNullOrEmpty(pass) && pass.StartsWith("enc:"))
+            {
+                try
+                {
+                    pass = Skua.Core.Utils.CryptoUtils.Decrypt(pass);
+                }
+                catch { }
+            }
+            string srv = !string.IsNullOrEmpty(server) ? server : (settings.Get("LastServer", "Twilly") ?? "Twilly");
+
+            string[] args = { "-u", username, "-p", pass, "-s", srv };
+            AddNewInstance(args, onCompleted);
+        });
+    }
+
+    public void LaunchGroup(string groupName)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+            settings.ReloadSettings();
+            List<GroupData> groups = settings.Get<List<GroupData>>("AccountGroups") ?? new List<GroupData>();
+            GroupData? group = groups.FirstOrDefault(item =>
+                string.Equals(item.Name, groupName, StringComparison.OrdinalIgnoreCase));
+            if (group?.Accounts != null)
+                LaunchAccountBatch(group.Accounts);
+        });
+    }
+
+    public void StartAllScripts()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_START_SCRIPT, IntPtr.Zero, IntPtr.Zero);
+            }
+        });
+    }
+
+    public void StopAllScripts()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_STOP_SCRIPT, IntPtr.Zero, IntPtr.Zero);
+            }
+        });
+    }
+
+    public void HeadlessAll(bool enabled)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            // Forward option 2 (Headless) with value
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_SET_OPTION, new IntPtr(2), new IntPtr(enabled ? 1 : 0));
+            }
+        });
+    }
+
+    public void ReloginAll()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_LOGIN, IntPtr.Zero, IntPtr.Zero);
+            }
+        });
+    }
+
+    public void BroadcastArmyScheduler(string playlistJson)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(playlistJson) && playlistJson.Trim().StartsWith("["))
+            {
+                var normalizedList = new List<ScriptSchedulerViewModel.SavedScriptItem>();
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(playlistJson);
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var el in doc.RootElement.EnumerateArray())
+                        {
+                            string sPath = string.Empty;
+                            string sName = string.Empty;
+                            if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                sPath = el.GetString() ?? string.Empty;
+                            }
+                            else if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
+                            {
+                                if (el.TryGetProperty("Path", out var pProp) || el.TryGetProperty("path", out pProp))
+                                    sPath = pProp.GetString() ?? string.Empty;
+                                if (el.TryGetProperty("Name", out var nProp) || el.TryGetProperty("name", out nProp))
+                                    sName = nProp.GetString() ?? string.Empty;
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(sPath))
+                            {
+                                if (string.IsNullOrWhiteSpace(sName))
+                                    sName = System.IO.Path.GetFileName(sPath);
+                                normalizedList.Add(new ScriptSchedulerViewModel.SavedScriptItem
+                                {
+                                    Path = sPath,
+                                    Name = sName,
+                                    Id = Guid.NewGuid()
+                                });
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                string tempFile = TabHostFiles.Playlist;
+                if (normalizedList.Count > 0)
+                {
+                    System.IO.File.WriteAllText(tempFile, System.Text.Json.JsonSerializer.Serialize(normalizedList));
+                }
+                else
+                {
+                    System.IO.File.WriteAllText(tempFile, playlistJson);
+                }
+            }
+            foreach (var info in _tabs.Values)
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, WM_SKUA_ARMY_SCHEDULER, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch { }
+    }
+
+    public void StopArmyScheduler()
+    {
+        try
+        {
+            foreach (var info in _tabs.Values)
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, WM_SKUA_ARMY_SCHEDULER_STOP, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch { }
+    }
+
+    public List<object> GetTabsInfoList()
+    {
+        try
+        {
+            if (!Dispatcher.UIThread.CheckAccess())
+            {
+                return Dispatcher.UIThread.Invoke(() => GetTabsInfoList());
+            }
+
+            var list = new List<object>();
+            int activePid = GetActiveChildPid();
+            string dir = TabHostFiles.TabsDirectory;
+
+            int tabIndex = 1;
+            foreach (var kvp in _tabs)
+            {
+                if (kvp.Value?.Process == null || kvp.Value.Process.HasExited)
+                    continue;
+
+                int pid = kvp.Value.Process.Id;
+                string tabTitle = GetTabTitle(kvp.Key);
+                string username = !string.IsNullOrWhiteSpace(tabTitle) ? tabTitle : $"Skua {tabIndex}";
+                try
+                {
+                    string userFile = Path.Combine(dir, $"{pid}.txt");
+                    if (File.Exists(userFile))
+                    {
+                        string u = File.ReadAllText(userFile).Trim();
+                        if (!string.IsNullOrWhiteSpace(u) && !u.StartsWith("Tab ", StringComparison.OrdinalIgnoreCase))
+                            username = u;
+                    }
+                }
+                catch { }
+                tabIndex++;
+
+                string map = "";
+                string cell = "";
+                string pad = "";
+                string server = "";
+                int hp = 0;
+                int maxHp = 0;
+                int mp = 0;
+                int maxMp = 0;
+                bool isScriptRunning = false;
+                string scriptName = "";
+
+                string locFile = Path.Combine(dir, $"{pid}.location.json");
+                if (File.Exists(locFile))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(locFile));
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("Map", out var mpProp)) map = mpProp.GetString() ?? "";
+                        if (root.TryGetProperty("Cell", out var clProp)) cell = clProp.GetString() ?? "";
+                        if (root.TryGetProperty("Pad", out var pdProp)) pad = pdProp.GetString() ?? "";
+                        if (root.TryGetProperty("Server", out var svProp)) server = svProp.GetString() ?? "";
+                        if (root.TryGetProperty("Hp", out var hProp)) hp = hProp.GetInt32();
+                        if (root.TryGetProperty("MaxHp", out var mhProp)) maxHp = mhProp.GetInt32();
+                        if (root.TryGetProperty("Mp", out var mProp)) mp = mProp.GetInt32();
+                        if (root.TryGetProperty("MaxMp", out var mmProp)) maxMp = mmProp.GetInt32();
+                        if (root.TryGetProperty("ScriptRunning", out var srProp)) isScriptRunning = srProp.GetBoolean();
+                        if (root.TryGetProperty("ScriptName", out var snProp)) scriptName = snProp.GetString() ?? "";
+                    }
+                    catch { }
+                }
+
+                list.Add(new
+                {
+                    pid = pid,
+                    username = username,
+                    is_active = (pid == activePid),
+                    map = map,
+                    cell = cell,
+                    pad = pad,
+                    server = server,
+                    hp = hp,
+                    max_hp = maxHp,
+                    mp = mp,
+                    max_mp = maxMp,
+                    script_running = isScriptRunning,
+                    script_name = scriptName
+                });
+            }
+            return list;
+        }
+        catch
+        {
+            return new List<object>();
+        }
+    }
+
+    #endregion Remote Control Gateway Helpers
 
     #endregion Tab Management
 }

@@ -83,6 +83,7 @@ public partial class App : Application
     {
         Skua.Shared.Avalonia.Controls.Shell.ShellIconTheme.Track(this, "avares://Skua.Shared.Avalonia/Assets/SkuaClientIcon.ico");
         RegisterGlobalExceptionHandlers();
+        Skua.Shared.Avalonia.Services.PointerCaptureReset.Track();
 
         ServiceCollection services = new();
         services.AddCommonServices();
@@ -158,7 +159,11 @@ public partial class App : Application
             }
             else HostInstanceId = null;
         }
+        if (hasEmbedFlag)
+            Environment.SetEnvironmentVariable("BONXIE_EMBED", "1");
+
         _parentHostProcessId = hasEmbedFlag ? hostPid : 0;
+        Skua.Core.AppStartup.HotKeys.ParentHostProcessId = _parentHostProcessId;
         if (_parentHostProcessId > 0)
             Skua.Shared.Avalonia.Controls.Shell.WindowTitleBar.ArtworkPathChanged += OnTitleBarArtworkPathChanged;
         if (_parentHostProcessId > 0 && themeService is AvaloniaThemeService initialTheme)
@@ -206,11 +211,13 @@ public partial class App : Application
                     Width = 800,
                     Height = 600,
                     Position = new global::Avalonia.PixelPoint(-32000, -32000),
-                    SystemDecorations = global::Avalonia.Controls.SystemDecorations.None,
+                    WindowDecorations = global::Avalonia.Controls.WindowDecorations.None,
                     ShowInTaskbar = false
                 };
                 desktop.MainWindow = mainChild;
                 mainChild.HideTitleBar();
+                mainChild.Closing += (_, e) => LogEmbeddedLifecycle("MainWindow.Closing", Environment.StackTrace);
+                mainChild.Closed += (_, _) => LogEmbeddedLifecycle("MainWindow.Closed");
 
                 mainChild.Opened += (s, ev) => 
                 {
@@ -319,7 +326,11 @@ public partial class App : Application
                 else
                     ThemeResourceApplicator.ApplyTitleBarTheme(masterWindow, themeService.IsDarkTheme);
             }
-            desktop.Exit += OnDesktopExit;
+            desktop.Exit += (sender, e) =>
+            {
+                LogEmbeddedLifecycle($"Desktop.Exit (ExitCode={e.ApplicationExitCode})");
+                OnDesktopExit(sender, e);
+            };
         }
 
         Task.Run(() => TryInitializeStartupServices());
@@ -401,6 +412,15 @@ public partial class App : Application
 
         try
         {
+            Ioc.Default.GetService<IRemoteControlService>()?.Start();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Startup remote control init failed: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        try
+        {
             IGetScriptsService? getScripts = Ioc.Default.GetService<IGetScriptsService>();
             if (getScripts is null)
                 return;
@@ -417,10 +437,32 @@ public partial class App : Application
                 && (settings.Get<bool>("AutoUpdateBotScripts")
                     || dialogService.ShowMessageBox("Would you like to update your scripts?", "Script Update", true) == true))
             {
-                await Skua.Core.Services.ScriptStartupUpdater.DownloadMissingAndOutdatedAsync(getScripts, dialogService);
+                await Skua.Core.Services.ScriptStartupUpdater.DownloadMissingAndOutdatedAsync(getScripts, dialogService, reportSuccess: true);
             }
         }
         catch { }
+    }
+
+    private static void LogEmbeddedLifecycle(string eventName, string? details = null)
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("BONXIE_EMBED")))
+            return;
+
+        try
+        {
+            string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "BonxieTabs");
+            System.IO.Directory.CreateDirectory(directory);
+            string entry = $"{DateTimeOffset.UtcNow:O} | PID={Environment.ProcessId} | {eventName}";
+            if (!string.IsNullOrWhiteSpace(details))
+                entry += Environment.NewLine + details;
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(directory, $"{Environment.ProcessId}.lifecycle.log"),
+                entry + Environment.NewLine);
+        }
+        catch (Exception exception)
+        {
+            System.Diagnostics.Trace.WriteLine($"Embedded lifecycle logging failed: {exception}");
+        }
     }
 
     private static void OnDesktopExit(object? sender, ControlledApplicationLifetimeExitEventArgs e)
@@ -449,6 +491,7 @@ public partial class App : Application
                 {
                     try { await Ioc.Default.GetRequiredService<IDiagnosticsService>().DisposeAsync(); } catch { }
                     try { Ioc.Default.GetRequiredService<ICaptureProxy>().Stop(); } catch { }
+                    try { Ioc.Default.GetService<IRemoteControlService>()?.Stop(); } catch { }
                     try
                     {
                         await ((IAsyncDisposable)Ioc.Default.GetRequiredService<IScriptBoost>()).DisposeAsync();

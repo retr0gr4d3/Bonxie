@@ -179,9 +179,6 @@ echo.
 
 call :Progress 42 "Compiling projects in parallel"
 
-rem The current latest Mugetsu release moved the AVX fallback asset to
-rem tag v1.6.0-skua.2 while retaining the skua.1 asset filename.
-rem Use latest/download for that optional asset without editing the csproj.
 dotnet build "%BUILD_FILTER%" -c Release --no-restore --verbosity minimal --nologo -m:%BUILD_WORKERS% -p:BuildInParallel=true -p:UseSharedCompilation=true
 if errorlevel 1 goto :Failure
 
@@ -197,7 +194,7 @@ rem ----------------------------------------------------------
 
 echo.
 echo Packaging and organizing output...
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "package-build.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "BuildTools\package-build.ps1"
 if errorlevel 1 goto :Failure
 
 if not exist "Build\Bonxie.exe" (

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -28,6 +29,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -90,6 +92,22 @@ public partial class TabbedHostWindow
     private static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern bool IsWindowEnabled(IntPtr hWnd);
+
+    private delegate void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint idEventThread, uint dwmsEventTime);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    private WinEventProc? _foregroundHookProc;
+    private IntPtr _foregroundHook = IntPtr.Zero;
+
+    [DllImport("user32.dll")]
     public static extern IntPtr BeginDeferWindowPos(int nNumWindows);
 
     [DllImport("user32.dll")]
@@ -118,6 +136,7 @@ public partial class TabbedHostWindow
     private const int GWL_HWNDPARENT = -8;
     private const int GWL_EXSTYLE = -20;
     private const uint GW_OWNER = 4;
+    private const uint GW_HWNDPREV = 3;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);

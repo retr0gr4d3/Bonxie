@@ -152,8 +152,8 @@ public class DiscordWebhookService : IDiscordWebhookService, IDisposable
             EnqueueAction(async () => await SendEmbedAsync("Script Started", $"**{GetBotName()}** has begun execution of **{scriptName}**.", 0x00FF00)); // Green
         }
 
-        // The first dashboard snapshot goes to Skua Nexus when it is set up; Discord gets one only when the user
-        // turned Health Pings on.
+        // The first dashboard snapshot goes to Skua Nexus (or a remote webhook) when one is set up; Discord gets one only
+        // when the user turned Health Pings on.
         if (!EnqueueHealthPing(settings?.NexusWebhookUrl, "is running.") && settings is { WebhookNotifyHealthPing: true })
             EnqueueHealthPing(settings.DiscordWebhookUrl, "is running.");
 

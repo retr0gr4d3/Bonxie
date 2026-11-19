@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Templates;
+using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -23,6 +24,11 @@ namespace Skua.Manager.Avalonia.Services;
 
 public class DialogService : Skua.Shared.Avalonia.Services.DialogServiceBase
 {
+    protected override void PlaceDialog(Window dialog, Window? owner)
+    {
+        dialog.WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen;
+    }
+
     protected override bool? ShowDialogInternal<TViewModel>(TViewModel viewModel, string title) where TViewModel : class
     {
         return viewModel switch
@@ -35,6 +41,7 @@ public class DialogService : Skua.Shared.Avalonia.Services.DialogServiceBase
             SelectAccountDialogViewModel selectAccount => ShowSelectAccountDialog(selectAccount, title),
             MessageBoxDialogViewModel messageBox => ShowMessageBox(messageBox.Message, messageBox.Title, messageBox.YesAndNo),
             CustomDialogViewModel custom => ShowCustomDialog(custom, title),
+            JobEditorDialogViewModel jobEditor => ShowJobEditorDialog(jobEditor, title),
             _ => ShowFallbackDialog(viewModel, title)
         };
     }
@@ -196,7 +203,7 @@ public class DialogService : Skua.Shared.Avalonia.Services.DialogServiceBase
             }
         };
         dialog.Content = WrapWithShell(title, content);
-        Show(dialog);
+        Show(dialog, input);
         return result;
     }
 
@@ -413,6 +420,21 @@ public class DialogService : Skua.Shared.Avalonia.Services.DialogServiceBase
         dialog.Content = WrapWithShell(string.IsNullOrWhiteSpace(title) ? "Script Options" : title, rootLayout);
         Show(dialog);
         return result;
+    }
+
+    private bool? ShowJobEditorDialog(JobEditorDialogViewModel vm, string title)
+    {
+        Window dialog = CreateBaseDialog(title);
+        dialog.Width = 640;
+        dialog.Height = 720;
+        dialog.CanResize = true;
+
+        vm.CloseAction = () => dialog.Close();
+        dialog.Closed += (_, _) => vm.Cleanup();
+
+        dialog.Content = WrapWithShell(title, new ContentControl { Content = vm });
+        Show(dialog);
+        return vm.DialogResult;
     }
 
     private bool? ShowFallbackDialog<TViewModel>(TViewModel vm, string title) where TViewModel : class

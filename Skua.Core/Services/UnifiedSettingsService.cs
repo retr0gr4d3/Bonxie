@@ -79,7 +79,7 @@ public class UnifiedSettingsService : ISettingsService
         }
     }
 
-    public T? Get<T>(string key)
+    public bool TryGet<T>(string key, out T? value)
     {
         lock (_lock)
         {
@@ -92,20 +92,33 @@ public class UnifiedSettingsService : ISettingsService
 
                 foreach (object section in sections)
                 {
-                    if (FindPropertyByJsonName(section.GetType(), key)?.GetValue(section) is T value && !IsDefaultOrEmpty(value))
-                        return value;
+                    if (FindPropertyByJsonName(section.GetType(), key)?.GetValue(section) is T found && !IsDefaultOrEmpty(found))
+                    {
+                        value = found;
+                        return true;
+                    }
                 }
 
                 // Nothing set anywhere: an empty shared value still beats the type's default.
                 if (FindPropertyByJsonName(_root.Shared.GetType(), key)?.GetValue(_root.Shared) is T sharedValue)
-                    return sharedValue;
+                {
+                    value = sharedValue;
+                    return true;
+                }
             }
             catch (Exception)
             {
             }
 
-            return default;
+            value = default;
+            return false;
         }
+    }
+
+    public T? Get<T>(string key)
+    {
+        TryGet<T>(key, out T? value);
+        return value;
     }
 
     private static bool IsDefaultOrEmpty(object val)
@@ -119,24 +132,45 @@ public class UnifiedSettingsService : ISettingsService
 
     public T Get<T>(string key, T defaultValue)
     {
-        T? value = Get<T>(key);
-        return value is null || value.Equals(default(T)) ? defaultValue : value;
+        if (TryGet<T>(key, out T? value) && value is not null)
+        {
+            if (value is string s && string.IsNullOrEmpty(s) && defaultValue is string defaultStr && !string.IsNullOrEmpty(defaultStr))
+                return defaultValue;
+
+            return value;
+        }
+        return defaultValue;
     }
 
     public void Set<T>(string key, T value)
     {
         lock (_lock)
         {
+            PropertyInfo? sharedProp = FindPropertyByJsonName(_root.Shared.GetType(), key);
+            PropertyInfo? clientProp = FindPropertyByJsonName(_root.Client.GetType(), key);
+            PropertyInfo? managerProp = FindPropertyByJsonName(_root.Manager.GetType(), key);
+
+            object? previousSharedValue = sharedProp?.GetValue(_root.Shared);
+            object? previousClientValue = clientProp?.GetValue(_root.Client);
+            object? previousManagerValue = managerProp?.GetValue(_root.Manager);
+
             try
             {
-                foreach (object section in new object[] { _root.Shared, _root.Client, _root.Manager })
-                    FindPropertyByJsonName(section.GetType(), key)?.SetValue(section, value);
+                sharedProp?.SetValue(_root.Shared, value);
+                clientProp?.SetValue(_root.Client, value);
+                managerProp?.SetValue(_root.Manager, value);
 
                 SaveSettings();
             }
             catch (Exception ex)
             {
+                // Keep the in-memory settings consistent with the last successfully persisted state.
+                sharedProp?.SetValue(_root.Shared, previousSharedValue);
+                clientProp?.SetValue(_root.Client, previousClientValue);
+                managerProp?.SetValue(_root.Manager, previousManagerValue);
+
                 Console.WriteLine($"Error setting value for key '{key}': {ex.Message}");
+                throw new InvalidOperationException($"Failed to save setting '{key}'.", ex);
             }
         }
     }
@@ -472,24 +506,11 @@ public class UnifiedSettingsService : ISettingsService
         {
             if (File.Exists(ClientFileSources.SkuaSettingsDIR))
             {
-                string json = File.ReadAllText(ClientFileSources.SkuaSettingsDIR);
-                JsonSerializerOptions options = GetJsonOptions();
-                SettingsRoot? loaded = JsonSerializer.Deserialize<SettingsRoot>(json, options);
+                SettingsRoot? loaded = ReadSettingsFile();
 
                 if (loaded != null)
                 {
                     _root = loaded;
-                    if (_root.FormatVersion == 0)
-                        _root.FormatVersion = 1;
-
-                    _root.Shared ??= new SharedSettings();
-                    _root.Client ??= new ClientSettings();
-                    _root.Manager ??= new ManagerSettings();
-
-                    _root.Shared.InitializeDefaults();
-                    _root.Client.InitializeDefaults();
-                    _root.Manager.InitializeDefaults();
-
                     if (CleanupDeprecatedKeys())
                         SaveSettings();
                 }
@@ -507,12 +528,36 @@ public class UnifiedSettingsService : ISettingsService
         }
     }
 
+    /// <summary>
+    /// Reads and normalizes the settings file; null when it holds no settings object. Throws on a read or parse
+    /// error. Call with the file mutex held.
+    /// </summary>
+    private SettingsRoot? ReadSettingsFile()
+    {
+        string json = File.ReadAllText(ClientFileSources.SkuaSettingsDIR);
+        SettingsRoot? loaded = JsonSerializer.Deserialize<SettingsRoot>(json, GetJsonOptions());
+        if (loaded == null)
+            return null;
+
+        if (loaded.FormatVersion == 0)
+            loaded.FormatVersion = 1;
+
+        loaded.Shared ??= new SharedSettings();
+        loaded.Client ??= new ClientSettings();
+        loaded.Manager ??= new ManagerSettings();
+
+        loaded.Shared.InitializeDefaults();
+        loaded.Client.InitializeDefaults();
+        loaded.Manager.InitializeDefaults();
+        return loaded;
+    }
+
     private void SaveSettings()
     {
-        bool locked = false;
+        bool mutexAcquired = false;
         try
         {
-            locked = AcquireFileMutex();
+            mutexAcquired = AcquireFileMutex();
 
             string tempFile = ClientFileSources.SkuaSettingsDIR + ".tmp";
 
@@ -520,7 +565,7 @@ public class UnifiedSettingsService : ISettingsService
             string json = JsonSerializer.Serialize(_root, options);
             File.WriteAllText(tempFile, json);
 
-            // One rename: a crash leaves either the old file or the new one, never neither.
+            // Replace the destination directly so a failed write does not delete the last good settings file.
             File.Move(tempFile, ClientFileSources.SkuaSettingsDIR, overwrite: true);
 
             // Signal cross-process settings change event
@@ -531,27 +576,10 @@ public class UnifiedSettingsService : ISettingsService
             }
             catch { }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error saving settings: {ex.Message}");
-        }
         finally
         {
-            if (locked)
+            if (mutexAcquired)
                 _fileMutex.ReleaseMutex();
-        }
-    }
-
-    // A process that died holding the mutex leaves it abandoned; the wait still hands it to us.
-    private bool AcquireFileMutex()
-    {
-        try
-        {
-            return _fileMutex.WaitOne();
-        }
-        catch (AbandonedMutexException)
-        {
-            return true;
         }
     }
 
@@ -657,22 +685,101 @@ public class UnifiedSettingsService : ISettingsService
         }
     }
 
-    public void ReloadSettings()
+    public void ReloadSettings() => TryReloadSettings();
+
+    /// <summary>
+    /// Re-reads the settings file so changes other Bonxie processes saved are seen. On a read or parse error the
+    /// settings in memory are kept and false is returned: falling back to defaults here would let the next save
+    /// write those defaults over the user's file. A missing file counts as success (memory is all there is).
+    /// </summary>
+    public bool TryReloadSettings()
     {
         lock (_lock)
         {
-            bool locked = false;
+            bool mutexAcquired = false;
             try
             {
-                locked = AcquireFileMutex();
-                LoadSettings();
+                mutexAcquired = AcquireFileMutex();
+                if (!File.Exists(ClientFileSources.SkuaSettingsDIR))
+                    return true;
+
+                SettingsRoot? loaded = ReadSettingsFile();
+                if (loaded == null)
+                {
+                    Console.WriteLine("Error reloading settings: the file holds no settings; kept the current ones.");
+                    return false;
+                }
+
+                _root = loaded;
+                if (CleanupDeprecatedKeys())
+                {
+                    // The loaded values are good either way; a failed cleanup save is retried by the next save.
+                    try { SaveSettings(); }
+                    catch (Exception ex) { Console.WriteLine($"Error saving settings cleanup: {ex.Message}"); }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reloading settings, kept the current ones: {ex.Message}");
+                return false;
             }
             finally
             {
-                if (locked)
+                if (mutexAcquired)
                     _fileMutex.ReleaseMutex();
             }
         }
+    }
+
+    /// <summary>
+    /// Reloads, changes and saves one setting as a single step under the cross-process file mutex, so a value
+    /// several processes edit (a shared list) never loses another process's change made in between. Returns false,
+    /// and writes nothing, when the reload fails; false too when the save fails (memory then keeps the old value).
+    /// <paramref name="change"/> must return a new value rather than modify the one it is given.
+    /// </summary>
+    public bool TryUpdate<T>(string key, T defaultValue, Func<T, T> change, out T result)
+    {
+        result = defaultValue;
+        lock (_lock)
+        {
+            bool mutexAcquired = false;
+            try
+            {
+                mutexAcquired = AcquireFileMutex();
+                if (!TryReloadSettings())
+                    return false;
+
+                T next = change(Get(key, defaultValue));
+                Set(key, next);
+                result = next;
+                return true;
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.WriteLine($"Error updating setting '{key}': {ex.Message}");
+                result = Get(key, defaultValue);
+                return false;
+            }
+            finally
+            {
+                if (mutexAcquired)
+                    _fileMutex.ReleaseMutex();
+            }
+        }
+    }
+
+    // A process that exited while holding the mutex leaves it abandoned; the wait still acquires it.
+    private bool AcquireFileMutex()
+    {
+        try
+        {
+            _fileMutex.WaitOne();
+        }
+        catch (AbandonedMutexException)
+        {
+        }
+        return true;
     }
 
     public void Dispose()

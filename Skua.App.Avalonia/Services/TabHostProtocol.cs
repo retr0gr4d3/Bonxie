@@ -13,6 +13,7 @@ internal static class TabHostMessages
     // Client to host
     public const int WM_SKUA_CHILD_READY = WM_USER + 440;
     public const int WM_SKUA_CHILD_DPICHANGED = WM_USER + 441;
+    public const int WM_SKUA_CHILD_OPTION = WM_USER + 466;
 
     // Host to client
     public const int WM_SKUA_GRIDVIEW = WM_USER + 444;
@@ -32,6 +33,7 @@ internal static class TabHostMessages
     public const int WM_SKUA_AUTO_ATTACK = WM_USER + 459;
     public const int WM_SKUA_JUMP_HOUSE = WM_USER + 464;
     public const int WM_SKUA_CHANGE_SERVER = WM_USER + 465;
+    public const int WM_SKUA_GAMEONLY = WM_USER + 467;
 }
 
 /// <summary>

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -28,6 +29,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -38,36 +40,62 @@ public partial class TabbedHostWindow
 {
     #region Group Assignment Helper
 
+    private string? GetProcessLoggedInUsername(TabInfo? info)
+    {
+        if (info?.Process == null || info.Process.HasExited)
+            return null;
+
+        try
+        {
+            string directory = TabHostFiles.TabsDirectory;
+            string file = Path.Combine(directory, $"{info.Process.Id}.txt");
+            if (!File.Exists(file)
+                || File.GetLastWriteTimeUtc(file) < info.Process.StartTime.ToUniversalTime())
+                return null;
+
+            string locationFile = Path.Combine(directory, $"{info.Process.Id}.location.json");
+            if (File.Exists(locationFile))
+            {
+                using JsonDocument location = JsonDocument.Parse(File.ReadAllText(locationFile));
+                if (location.RootElement.TryGetProperty("LoggedIn", out JsonElement loggedIn)
+                    && loggedIn.ValueKind == JsonValueKind.False)
+                    return null;
+            }
+
+            string username = File.ReadAllText(file).Trim();
+            if (!string.IsNullOrWhiteSpace(username)
+                && !username.StartsWith("User ", StringComparison.OrdinalIgnoreCase)
+                && !username.StartsWith("Skua ", StringComparison.OrdinalIgnoreCase))
+                return username;
+        }
+        catch { }
+
+        return null;
+    }
+
     private string? GetTabLoggedInUsername(TabItem tab, TabInfo? info, string currentTitle)
     {
-        if (info?.Process != null && !info.Process.HasExited)
-        {
-            try
-            {
-                string file = TabHostFiles.UsernameOf(info.Process.Id);
-                if (File.Exists(file))
-                {
-                    string name = File.ReadAllText(file).Trim();
-                    if (!string.IsNullOrWhiteSpace(name) &&
-                        !name.StartsWith("User ", StringComparison.OrdinalIgnoreCase) &&
-                        !name.StartsWith("Skua ", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return name;
-                    }
-                }
-            }
-            catch { }
-        }
+        string? processUsername = GetProcessLoggedInUsername(info);
+        if (!string.IsNullOrWhiteSpace(processUsername))
+            return processUsername;
 
         string title = currentTitle?.Trim() ?? "";
         if (!string.IsNullOrWhiteSpace(title) &&
             !title.StartsWith("User ", StringComparison.OrdinalIgnoreCase) &&
             !title.StartsWith("Skua ", StringComparison.OrdinalIgnoreCase))
-        {
             return title;
-        }
 
         return null;
+    }
+
+    private static void CompleteTabLaunch(TabInfo info, bool success)
+    {
+        Action<bool>? completion = info.LaunchCompletion;
+        if (completion == null)
+            return;
+
+        info.LaunchCompletion = null;
+        completion(success);
     }
 
     private void PopulateAddToGroupMenu(MenuItem parentItem, TabItem tab, TabInfo? info, string currentTitle)
