@@ -210,7 +210,7 @@ public class ScriptAccounts : IScriptAccounts
             ? new List<ManagedAccount>()
             : accounts.Select(kvp => new ManagedAccount(
             kvp.Key,
-            kvp.Value.Password,
+            string.Empty, // Scripts are third-party code; they get the account list, never the passwords.
             kvp.Value.DisplayName,
             kvp.Value.Tags.ToList()
         )).ToList();

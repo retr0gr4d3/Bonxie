@@ -89,7 +89,7 @@ public partial class App : Application
         services.AddCommonServices();
         services.AddCompiler();
         services.AddScriptableObjects();
-        services.AddSingleton<ISettingsService, SettingsService>();
+        services.AddSingleton<ISettingsService>(_ => new Skua.Core.Services.UnifiedSettingsService(Skua.Core.Models.AppRole.Client));
         services.AddSingleton<IDispatcherService, DispatcherService>();
         services.AddSingleton<IClipboardService, ClipboardService>();
         services.AddSingleton<IDialogService, DialogService>();
@@ -125,7 +125,8 @@ public partial class App : Application
         themeService.SchemeChanged += OnSchemeChanged;
         ApplyThemeFromService(themeService);
 
-        string[] args = Environment.GetCommandLineArgs();
+        // Includes the password/token this process was handed in its environment (see StartupSecrets).
+        string[] args = Skua.Core.Utils.StartupSecrets.CommandLine;
         bool hasEmbedFlag = false;
         long embedHwnd = 0;
         int hostPid = 0;
@@ -229,7 +230,7 @@ public partial class App : Application
 
                         if (embedHwnd != 0)
                         {
-                            PostMessage_Native(new IntPtr(embedHwnd), 0x0400 + 440 /* WM_SKUA_CHILD_READY */, childHwnd, new IntPtr(Environment.ProcessId));
+                            PostMessage_Native(new IntPtr(embedHwnd), Services.TabHostMessages.WM_SKUA_CHILD_READY, childHwnd, new IntPtr(Environment.ProcessId));
                         }
                     }
                 };

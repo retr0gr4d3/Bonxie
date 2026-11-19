@@ -2937,13 +2937,7 @@ public class RemoteControlService : IRemoteControlService
             var accs = _settingsService.Get<Dictionary<string, AccountData>>("ManagedAccounts");
             string pass = string.Empty;
             if (accs != null && accs.TryGetValue(username, out var acc))
-            {
-                pass = acc.Password ?? string.Empty;
-                if (pass.StartsWith("enc:"))
-                {
-                    try { pass = Skua.Core.Utils.CryptoUtils.Decrypt(pass); } catch { }
-                }
-            }
+                pass = Skua.Core.Utils.CryptoUtils.Decrypt(acc.Password ?? string.Empty);
             string srv = !string.IsNullOrEmpty(server) ? server : (_settingsService.Get("LastServer", "Twilly") ?? "Twilly");
 
             string exePath = Process.GetCurrentProcess().MainModule?.FileName ?? "";
@@ -2959,8 +2953,9 @@ public class RemoteControlService : IRemoteControlService
             }
             psi.ArgumentList.Add("-u");
             psi.ArgumentList.Add(username);
-            psi.ArgumentList.Add("-p");
-            psi.ArgumentList.Add(pass);
+            // The password travels in the environment, never on the command line.
+            if (!string.IsNullOrEmpty(pass))
+                psi.Environment[Skua.Core.Utils.StartupSecrets.PasswordVariable] = pass;
             psi.ArgumentList.Add("-s");
             psi.ArgumentList.Add(srv);
             psi.WorkingDirectory = AppContext.BaseDirectory;

@@ -109,10 +109,19 @@
         <SkuaPlayerAvxUrl>https://github.com/retr0gr4d3/skua-mugetsu/releases/download/v$(SkuaPlayerVersion)/$(SkuaPlayerAvxArchive)</SkuaPlayerAvxUrl>
         <SkuaPlayerAvxCache>$(SkuaPlayerCache)-x86-64-v2</SkuaPlayerAvxCache>
         <SkuaPlayerAvxDir>$(SkuaPlayerAvxCache)\Mugetsu</SkuaPlayerAvxDir>
+
+        <!-- SHA-256 of each archive of release v$(SkuaPlayerVersion). The player is a third-party executable shipped
+             inside Bonxie and release files can be replaced, so a download that doesn't match fails the build.
+             When changing SkuaPlayerVersion, set these from the new release's asset digests. -->
+        <SkuaPlayerSha256 Condition="'$(BonxieWindows)' == 'true'">724c7f4b47cbac05ccddfef13807308f88bcbc177c01f6d63367ea9cabcdb02d</SkuaPlayerSha256>
+        <SkuaPlayerSha256 Condition="'$(BonxieWindows)' != 'true'">88247847f2a378feca9f040a5e80b8fbb0f445ed982d1457c68264417565032e</SkuaPlayerSha256>
+        <SkuaPlayerAvxSha256 Condition="'$(BonxieWindows)' == 'true'">3f94cdbc74ee766f839bd33ed9231745dfed6c9542e458b8fa794ed8e7c71624</SkuaPlayerAvxSha256>
+        <SkuaPlayerAvxSha256 Condition="'$(BonxieWindows)' != 'true'">202125646ac42f1174cb4b9e4830270f51a189d0647d982277db9d63fdab61f2</SkuaPlayerAvxSha256>
     </PropertyGroup>
 
     <Target Name="DownloadSkuaPlayer" Condition="'$(SkuaPlayerLocal)' == '' And !Exists('$(SkuaPlayerDir)\$(SkuaPlayerExe)')">
         <DownloadFile SourceUrl="$(SkuaPlayerUrl)" DestinationFolder="$(SkuaPlayerCache)" />
+        <VerifyFileHash File="$(SkuaPlayerCache)\$(SkuaPlayerArchive)" Algorithm="SHA256" Hash="$(SkuaPlayerSha256)" />
         <Unzip Condition="'$(BonxieWindows)' == 'true'" SourceFiles="$(SkuaPlayerCache)\$(SkuaPlayerArchive)" DestinationFolder="$(SkuaPlayerCache)" />
         <!-- A tar archive keeps the player's executable mark. -->
         <Exec Condition="'$(BonxieWindows)' != 'true'" Command="tar -xzf &quot;$(SkuaPlayerArchive)&quot;" WorkingDirectory="$(SkuaPlayerCache)" />
@@ -120,6 +129,7 @@
 
     <Target Name="DownloadSkuaPlayerAvx" Condition="'$(SkuaPlayerLocal)' == '' And !Exists('$(SkuaPlayerAvxDir)\$(SkuaPlayerExe)')">
         <DownloadFile SourceUrl="$(SkuaPlayerAvxUrl)" DestinationFolder="$(SkuaPlayerAvxCache)" ContinueOnError="WarnAndContinue" />
+        <VerifyFileHash Condition="Exists('$(SkuaPlayerAvxCache)\$(SkuaPlayerAvxArchive)')" File="$(SkuaPlayerAvxCache)\$(SkuaPlayerAvxArchive)" Algorithm="SHA256" Hash="$(SkuaPlayerAvxSha256)" />
         <Unzip Condition="'$(BonxieWindows)' == 'true' And Exists('$(SkuaPlayerAvxCache)\$(SkuaPlayerAvxArchive)')" SourceFiles="$(SkuaPlayerAvxCache)\$(SkuaPlayerAvxArchive)" DestinationFolder="$(SkuaPlayerAvxCache)" />
         <Exec Condition="'$(BonxieWindows)' != 'true' And Exists('$(SkuaPlayerAvxCache)\$(SkuaPlayerAvxArchive)')" Command="tar -xzf &quot;$(SkuaPlayerAvxArchive)&quot;" WorkingDirectory="$(SkuaPlayerAvxCache)" />
     </Target>

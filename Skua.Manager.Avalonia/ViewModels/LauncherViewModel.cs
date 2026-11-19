@@ -76,37 +76,14 @@ public partial class LauncherViewModel : BotControlViewModelBase, IDisposable
     {
         await Task.Run(() =>
         {
-            List<string> args = new();
-            if (_settingsService.Get("syncTheme", false))
-            {
-                args.Add("--use-theme");
-                args.Add(_settingsService.Get("CurrentTheme", "no-theme"));
-            }
-
-            string server = _settingsService.Get("LastServer", "Twilly");
-            if (!string.IsNullOrWhiteSpace(server))
-            {
-                args.Add("-s");
-                args.Add(server);
-            }
-
-            string token = _settingsService.Get("UserGitHubToken", string.Empty);
-            if (!string.IsNullOrEmpty(token))
-            {
-                args.Add("--gh-token");
-                args.Add(token);
-            }
-
             try
             {
-                ProcessStartInfo startInfo = new(SkuaExecutableLocator.ExecutablePath)
+                Process? proc = new ClientLaunch
                 {
-                    WorkingDirectory = SkuaExecutableLocator.WorkingDirectory
-                };
-                foreach (string arg in args)
-                    startInfo.ArgumentList.Add(arg);
-
-                Process? proc = Process.Start(startInfo);
+                    Server = _settingsService.Get("LastServer", "Twilly"),
+                    Theme = _settingsService.Get("syncTheme", false) ? _settingsService.Get("CurrentTheme", "no-theme") : null,
+                    GitHubToken = _settingsService.Get("UserGitHubToken", string.Empty)
+                }.Start();
                 if (proc != null)
                 {
                     ProcessInfo procInfo = new(proc, $"Bonxie #{proc.Id}");

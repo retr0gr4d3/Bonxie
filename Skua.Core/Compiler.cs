@@ -120,15 +120,7 @@ public class Compiler : CSharpScriptExecution
             {
                 try
                 {
-                    if (loadContext != null)
-                    {
-                        using FileStream stream = File.OpenRead(cachedAssemblyPath);
-                        Assembly = loadContext.LoadFromStream(stream);
-                    }
-                    else
-                    {
-                        Assembly = Assembly.LoadFrom(cachedAssemblyPath);
-                    }
+                    Assembly = LoadCompiled(cachedAssemblyPath, loadContext);
                     RegisterCompiled(hash, cachedAssemblyPath);
                     RegisterLoaded(cachedAssemblyPath, Assembly);
                 }
@@ -225,32 +217,8 @@ public class Compiler : CSharpScriptExecution
 
         using (codeStream)
         {
-            EmitResult? compilationResult = null;
-            if (CompileWithDebug)
-            {
-                const DebugInformationFormat debugOptions = DebugInformationFormat.Embedded;
-                compilationResult = compilation.Emit(codeStream, options: new EmitOptions(debugInformationFormat: debugOptions));
-            }
-            else
-            {
-                compilationResult = compilation.Emit(codeStream);
-            }
-
-            if (!compilationResult.Success)
-            {
-                StringBuilder sb = new();
-                foreach (Diagnostic diag in
-                    compilationResult.Diagnostics
-                        .Where(diagnostic => diagnostic.IsWarningAsError || diagnostic.Severity == DiagnosticSeverity.Error))
-                {
-                    sb.AppendLine(diag.ToString());
-                }
-
-                ErrorType = ExecutionErrorTypes.Compilation;
-                ErrorMessage = sb.ToString();
-                SetErrors(new ApplicationException(ErrorMessage));
+            if (!Emit(compilation, codeStream))
                 return false;
-            }
 
             if (!noLoad)
             {
@@ -367,99 +335,66 @@ public class Compiler : CSharpScriptExecution
         return Path.Combine(_cacheDirectory, fileName);
     }
 
+    private static Assembly LoadCompiled(string path, ScriptLoadContext? loadContext)
+    {
+        if (loadContext is null)
+            return Assembly.LoadFrom(path);
+
+        using FileStream stream = File.OpenRead(path);
+        return loadContext.LoadFromStream(stream);
+    }
+
+    /// <summary>
+    /// Compiles <paramref name="source"/> to <paramref name="outputPath"/> and loads it, unless another client got
+    /// there first, in which case its assembly is loaded. A named mutex keeps clients from compiling the same script
+    /// into the same file at once.
+    /// </summary>
     private bool CompileOrWaitForAssembly(string source, string outputPath, ScriptLoadContext? loadContext)
     {
         string mutexName = $"Global\\Skua_Compile_{Path.GetFileName(outputPath).Replace(".dll", "").Replace("-", "_")}";
-        Mutex? compilationMutex = null;
+        using Mutex compilationMutex = new(false, mutexName);
 
         try
         {
-            compilationMutex = new Mutex(false, mutexName);
-
             if (!compilationMutex.WaitOne(TimeSpan.FromMinutes(2)))
-            {
-                ErrorType = ExecutionErrorTypes.Compilation;
-                ErrorMessage = "Timeout waiting for script compilation to complete.";
-                SetErrors(new ApplicationException(ErrorMessage));
-                return false;
-            }
-
-            try
-            {
-                if (File.Exists(outputPath))
-                {
-                    if (FastVerifyAssembly(outputPath))
-                    {
-                        if (loadContext != null)
-                        {
-                            using FileStream stream = File.OpenRead(outputPath);
-                            Assembly = loadContext.LoadFromStream(stream);
-                        }
-                        else
-                        {
-                            Assembly = Assembly.LoadFrom(outputPath);
-                        }
-                        return true;
-                    }
-                    else
-                    {
-                        try
-                        {
-                            File.Delete(outputPath);
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-
-                if (!CompileAssemblyToDisk(source, outputPath))
-                    return false;
-
-                if (loadContext != null)
-                {
-                    using FileStream stream = File.OpenRead(outputPath);
-                    Assembly = loadContext.LoadFromStream(stream);
-                }
-                else
-                {
-                    Assembly = Assembly.LoadFrom(outputPath);
-                }
-                return true;
-            }
-            finally
-            {
-                compilationMutex.ReleaseMutex();
-            }
+                return Fail("Timeout waiting for script compilation to complete.");
         }
         catch (AbandonedMutexException)
         {
-            if (File.Exists(outputPath))
+            // The client that was compiling died. The mutex is ours now; whatever it left is checked below.
+        }
+
+        try
+        {
+            if (File.Exists(outputPath) && !FastVerifyAssembly(outputPath))
             {
-                if (FastVerifyAssembly(outputPath))
+                try
                 {
-                    if (loadContext != null)
-                    {
-                        using FileStream stream = File.OpenRead(outputPath);
-                        Assembly = loadContext.LoadFromStream(stream);
-                    }
-                    else
-                    {
-                        Assembly = Assembly.LoadFrom(outputPath);
-                    }
-                    return true;
+                    File.Delete(outputPath);
+                }
+                catch
+                {
                 }
             }
 
-            ErrorType = ExecutionErrorTypes.Compilation;
-            ErrorMessage = "Compilation was abandoned by another process.";
-            SetErrors(new ApplicationException(ErrorMessage));
-            return false;
+            if (!File.Exists(outputPath) && !CompileAssemblyToDisk(source, outputPath))
+                return false;
+
+            Assembly = LoadCompiled(outputPath, loadContext);
+            return true;
         }
         finally
         {
-            compilationMutex?.Dispose();
+            compilationMutex.ReleaseMutex();
         }
+    }
+
+    private bool Fail(string message)
+    {
+        ErrorType = ExecutionErrorTypes.Compilation;
+        ErrorMessage = message;
+        SetErrors(new ApplicationException(message));
+        return false;
     }
 
     private bool CompileAssemblyToDisk(string source, string outputPath)
@@ -481,34 +416,28 @@ public class Compiler : CSharpScriptExecution
             GeneratedClassCode = source;
 
         using FileStream codeStream = new(outputPath, FileMode.Create, FileAccess.Write);
-        EmitResult? compilationResult = null;
-        if (CompileWithDebug)
-        {
-            const DebugInformationFormat debugOptions = DebugInformationFormat.Embedded;
-            compilationResult = compilation.Emit(codeStream, options: new EmitOptions(debugInformationFormat: debugOptions));
-        }
-        else
-        {
-            compilationResult = compilation.Emit(codeStream);
-        }
+        return Emit(compilation, codeStream);
+    }
 
-        if (!compilationResult.Success)
-        {
-            StringBuilder sb = new();
-            foreach (Diagnostic diag in
-                compilationResult.Diagnostics
-                    .Where(diagnostic => diagnostic.IsWarningAsError || diagnostic.Severity == DiagnosticSeverity.Error))
-            {
-                sb.AppendLine(diag.ToString());
-            }
+    /// <summary>Writes the compiled assembly to <paramref name="codeStream"/>; on failure the errors are recorded.</summary>
+    private bool Emit(CSharpCompilation compilation, Stream codeStream)
+    {
+        EmitResult compilationResult = CompileWithDebug
+            ? compilation.Emit(codeStream, options: new EmitOptions(debugInformationFormat: DebugInformationFormat.Embedded))
+            : compilation.Emit(codeStream);
 
-            ErrorType = ExecutionErrorTypes.Compilation;
-            ErrorMessage = sb.ToString();
-            SetErrors(new ApplicationException(ErrorMessage));
-            return false;
+        if (compilationResult.Success)
+            return true;
+
+        StringBuilder sb = new();
+        foreach (Diagnostic diag in
+            compilationResult.Diagnostics
+                .Where(diagnostic => diagnostic.IsWarningAsError || diagnostic.Severity == DiagnosticSeverity.Error))
+        {
+            sb.AppendLine(diag.ToString());
         }
 
-        return true;
+        return Fail(sb.ToString());
     }
 
     private static void TryRunCleanup()
