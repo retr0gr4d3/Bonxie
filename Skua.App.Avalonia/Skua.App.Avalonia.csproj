@@ -65,6 +65,21 @@
         </None>
     </ItemGroup>
 
+    <PropertyGroup Condition="'$(BonxieWindows)' != 'true'">
+        <SkuaX11RustTarget Condition="'$(RuntimeIdentifier)' == 'linux-x64'">x86_64-unknown-linux-gnu</SkuaX11RustTarget>
+        <SkuaX11RustTarget Condition="'$(RuntimeIdentifier)' == 'linux-arm64'">aarch64-unknown-linux-gnu</SkuaX11RustTarget>
+        <SkuaX11CargoArgs Condition="'$(SkuaX11RustTarget)' != ''"> --target $(SkuaX11RustTarget)</SkuaX11CargoArgs>
+        <SkuaX11OutputDir Condition="'$(SkuaX11RustTarget)' != ''">..\Skua.X11Host\target\$(SkuaX11RustTarget)\release</SkuaX11OutputDir>
+        <SkuaX11OutputDir Condition="'$(SkuaX11RustTarget)' == ''">..\Skua.X11Host\target\release</SkuaX11OutputDir>
+    </PropertyGroup>
+
+    <Target Name="BuildSkuaX11Host" BeforeTargets="AssignTargetPaths" Condition="'$(BonxieWindows)' != 'true' And !$([MSBuild]::IsOSPlatform('Windows'))">
+        <Exec Command="cargo build --release$(SkuaX11CargoArgs) --manifest-path &quot;$(MSBuildThisFileDirectory)..\Skua.X11Host\Cargo.toml&quot;" />
+        <ItemGroup>
+            <None Include="$(SkuaX11OutputDir)\libbonxie_x11.so" Link="libbonxie_x11.so" CopyToOutputDirectory="PreserveNewest" />
+        </ItemGroup>
+    </Target>
+
     <!--
       The game player: the Skua build of Mugetsu (GPL-3.0, source at https://github.com/retr0gr4d3/skua-mugetsu).
       It is downloaded once into player\<version>-<os>\ at the repository root and copied to the output's player\ folder.
@@ -72,10 +87,10 @@
     -->
     <PropertyGroup>
         <!-- Files named as the skua-mugetsu "Build Mugetsu" workflow's draft release names them. -->
-        <SkuaPlayerVersion>1.6.0-skua.5</SkuaPlayerVersion>
+        <SkuaPlayerVersion>2.0.3-skua.1</SkuaPlayerVersion>
         <!-- The skua.5 release names its files without the Mugetsu-<version>- prefix (windows.zip, linux.tar.gz).
              For a release made by the Build Mugetsu workflow, set this to Mugetsu-$(SkuaPlayerVersion)-. -->
-        <SkuaPlayerAssetPrefix></SkuaPlayerAssetPrefix>
+        <SkuaPlayerAssetPrefix>Mugetsu-$(SkuaPlayerVersion)-</SkuaPlayerAssetPrefix>
         <SkuaPlayerOs Condition="'$(BonxieWindows)' == 'true'">windows</SkuaPlayerOs>
         <SkuaPlayerOs Condition="'$(BonxieWindows)' != 'true'">linux</SkuaPlayerOs>
         <SkuaPlayerArchive Condition="'$(BonxieWindows)' == 'true'">$(SkuaPlayerAssetPrefix)windows.zip</SkuaPlayerArchive>

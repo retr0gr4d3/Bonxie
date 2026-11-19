@@ -29,7 +29,20 @@ public class HotKeyService : IHotKeyService, IDisposable
         _hotKeys = hotKeys;
         _settingsService = settingsService;
         _decamelizer = decamelizer;
+
+        _hotKeys.TryAdd("ToggleFullscreen", new RelayCommand(() => ToggleFullscreenRequested?.Invoke()));
+        _hotKeys.TryAdd("ToggleGameFullScreen", new RelayCommand(() =>
+        {
+            if (!global::Skua.Core.AppStartup.HotKeys.IsHostProcess)
+                ToggleDetachedGameFullScreenRequested?.Invoke();
+            else
+                ToggleGameFullScreenRequested?.Invoke();
+        }));
     }
+
+    internal static Action? ToggleFullscreenRequested { get; set; }
+    internal static Action? ToggleGameFullScreenRequested { get; set; }
+    internal static Action? ToggleDetachedGameFullScreenRequested { get; set; }
 
     private readonly Dictionary<string, IRelayCommand> _hotKeys;
     private readonly ISettingsService _settingsService;
@@ -206,11 +219,17 @@ public class HotKeyService : IHotKeyService, IDisposable
             hotkeys.Add("ToggleLagKiller|F6");
             hotkeys.Add("OpenConsole|Ctrl+Shift+C");
             hotkeys.Add("SearchScripts|Ctrl+Shift+F");
+            hotkeys.Add("ToggleFullscreen|F11");
+            hotkeys.Add("ToggleGameFullScreen|Shift+F11");
             return;
         }
 
         if (!HasBinding("OpenBank"))
             hotkeys.Add("OpenBank|F2");
+        if (!HasBinding("ToggleFullscreen"))
+            hotkeys.Add("ToggleFullscreen|F11");
+        if (!HasBinding("ToggleGameFullScreen"))
+            hotkeys.Add("ToggleGameFullScreen|Shift+F11");
     }
 
     private void AttachMainWindow()

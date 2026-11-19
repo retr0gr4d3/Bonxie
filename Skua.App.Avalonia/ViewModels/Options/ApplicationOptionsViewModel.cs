@@ -50,6 +50,11 @@ public partial class ApplicationOptionsViewModel : BotControlViewModelBase
 {
     // Sections by settings key (the option's Tag); everything else is a webhook option
     private static readonly string[] GeneralKeys = { "ShowUsernameInTitle", "GrandpaMode", "ClientAnim", "ReloginTryDelay", "ReloginWatchdog", "ClearFlashCache" };
+    private static readonly string[] MugetsuKeys =
+    {
+        "GraphicsApi", "MugetsuPerformanceMode", "MugetsuFrameInterpolation", "MugetsuFramePacing",
+        "MugetsuFpsLimit", "MugetsuMemoryLimitMb", "MugetsuFreeMemoryNow", "MugetsuShowFps"
+    };
     private static readonly string[] UpdateKeys =
     {
         "CheckBotScriptsUpdates", "AutoUpdateBotScripts", "CheckAdvanceSkillSetsUpdates", "AutoUpdateAdvanceSkillSetsUpdates",
@@ -108,12 +113,14 @@ public partial class ApplicationOptionsViewModel : BotControlViewModelBase
             keys.Select(k => ApplicationOptions.FirstOrDefault(i => i.Tag == k)).OfType<DisplayOptionItemViewModelBase>().ToList();
 
         List<DisplayOptionItemViewModelBase> general = InSection(GeneralKeys);
+        List<DisplayOptionItemViewModelBase> mugetsu = InSection(MugetsuKeys);
         List<DisplayOptionItemViewModelBase> updates = InSection(UpdateKeys);
-        List<DisplayOptionItemViewModelBase> webhooks = ApplicationOptions.Except(general).Except(updates).ToList();
+        List<DisplayOptionItemViewModelBase> webhooks = ApplicationOptions.Except(general).Except(mugetsu).Except(updates).ToList();
 
         OptionGroups = new List<OptionGroupViewModel>
         {
             new() { Title = "General & Performance", ShortTitle = "General", Icon = "ApplicationCogOutline", Items = general },
+            new() { Title = "Mugetsu Player", ShortTitle = "Mugetsu", Icon = "GamepadVariantOutline", Items = mugetsu },
             new() { Title = "Auto Updates & Sync", ShortTitle = "Updates", Icon = "CloudSyncOutline", Items = updates },
             new() { Title = "Webhooks & Alerts", ShortTitle = "Webhooks", Icon = "Webhook", Items = webhooks }
         };
