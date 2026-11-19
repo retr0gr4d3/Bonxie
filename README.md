@@ -96,7 +96,8 @@ dotnet build Skua.sln -c Release -p:WarningLevel=0 --nologo
 
 * **[auqw/skua](https://github.com/auqw/skua)** — Original Skua framework and core botting API.
 * **[ArrowDev](https://github.com/ArrowDev123/Skua) (BlackArrow on Discord)** — Early Avalonia UI port foundation.
-* **NinjaXz** — Client overhaul: engineered the multi-client tabbed host, army controls & grid view, headless mode, autonomous script scheduler, repaired broken subsystems & crash loops, and modernized the desktop UI with Avalonia.
+* **[NinjaXz](https://github.com/NinjaXz)** — Client overhaul: engineered the multi-client tabbed host, army controls & grid view, headless mode, autonomous script scheduler, repaired broken subsystems & crash loops, and modernized the desktop UI with Avalonia. Our upstream source.
+* **Retr0gr4d3** — Moving to Ruffle and implementing Linux support.
 
 ---
 
