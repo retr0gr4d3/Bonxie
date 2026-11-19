@@ -105,10 +105,63 @@ public partial class MainWindow : Window
     private bool _startupExecuted;
     private bool _isTitleBarPermanentlyHidden = false;
     private WindowState _stateBeforeFullScreen = WindowState.Normal;
+    private (int X, int Y, double WidthDip, double HeightDip)? _boundsBeforeFullScreen;
     private bool _gameOnly;
     private bool _gameOnlySetFullScreen;
     private int _preThrottleFPS = -1;
     private string? _preThrottleQuality = null;
+
+    private void EnterFullScreen()
+    {
+        _stateBeforeFullScreen = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+        if (_stateBeforeFullScreen == WindowState.Normal && ClientSize.Width > 0 && ClientSize.Height > 0)
+            _boundsBeforeFullScreen = (Position.X, Position.Y, ClientSize.Width, ClientSize.Height);
+
+        Width = double.NaN;
+        Height = double.NaN;
+        WindowState = WindowState.FullScreen;
+    }
+
+    private void ExitFullScreen()
+    {
+        WindowState target = (_stateBeforeFullScreen == WindowState.FullScreen || _stateBeforeFullScreen == WindowState.Minimized)
+            ? WindowState.Normal
+            : _stateBeforeFullScreen;
+        WindowState = target;
+
+        if (target == WindowState.Normal && _boundsBeforeFullScreen is { } saved)
+        {
+            DispatcherTimer.RunOnce(() =>
+            {
+                if (WindowState != WindowState.Normal)
+                    return;
+                Width = saved.WidthDip + 1;
+                Height = saved.HeightDip + 1;
+                DispatcherTimer.RunOnce(() =>
+                {
+                    if (WindowState != WindowState.Normal)
+                        return;
+                    Width = saved.WidthDip;
+                    Height = saved.HeightDip;
+                    var screen = Screens?.ScreenFromWindow(this) ?? Screens?.Primary;
+                    if (screen != null)
+                    {
+                        double scale = RenderScaling > 0 ? RenderScaling : 1.0;
+                        int wPx = (int)Math.Round(saved.WidthDip * scale);
+                        int hPx = (int)Math.Round(saved.HeightDip * scale);
+                        var wa = screen.WorkingArea;
+                        int cx = wa.X + Math.Max(0, (wa.Width - wPx) / 2);
+                        int cy = wa.Y + Math.Max(0, (wa.Height - hPx) / 2);
+                        Position = new global::Avalonia.PixelPoint(cx, cy);
+                    }
+                    else
+                    {
+                        Position = new global::Avalonia.PixelPoint(saved.X, saved.Y);
+                    }
+                }, TimeSpan.FromMilliseconds(50));
+            }, TimeSpan.FromMilliseconds(150));
+        }
+    }
 
     public void ToggleFullScreen()
     {
@@ -120,38 +173,28 @@ public partial class MainWindow : Window
 
         if (WindowState == WindowState.FullScreen)
         {
-            WindowState = (_stateBeforeFullScreen == WindowState.FullScreen || _stateBeforeFullScreen == WindowState.Minimized)
-                ? WindowState.Normal
-                : _stateBeforeFullScreen;
+            ExitFullScreen();
             return;
         }
 
-        _stateBeforeFullScreen = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
-        WindowState = WindowState.FullScreen;
+        EnterFullScreen();
     }
 
     public void ToggleDetachedGameOnly()
     {
         if (_gameOnly)
         {
-            ApplyGameOnly(false);
             if (_gameOnlySetFullScreen && WindowState == WindowState.FullScreen)
-            {
-                WindowState = (_stateBeforeFullScreen == WindowState.FullScreen || _stateBeforeFullScreen == WindowState.Minimized)
-                    ? WindowState.Normal
-                    : _stateBeforeFullScreen;
-            }
+                ExitFullScreen();
             _gameOnlySetFullScreen = false;
+            ApplyGameOnly(false);
             return;
         }
 
+        ApplyGameOnly(true);
         _gameOnlySetFullScreen = WindowState != WindowState.FullScreen;
         if (_gameOnlySetFullScreen)
-        {
-            _stateBeforeFullScreen = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
-            WindowState = WindowState.FullScreen;
-        }
-        ApplyGameOnly(true);
+            EnterFullScreen();
     }
 
     /// <summary>Game-only full screen: this client's menu bar and title bar are hidden (inside a tab window the tab window hides its own).</summary>
@@ -164,6 +207,7 @@ public partial class MainWindow : Window
         var titleBar = this.FindControl<global::Avalonia.Controls.Control>("TitleBar");
         if (titleBar != null && !_isTitleBarPermanentlyHidden)
             titleBar.IsVisible = !on;
+        ResizeGripOverlay.IsVisible = !on && HotKeys.HostHwnd == IntPtr.Zero;
     }
 
     public void HideTitleBar()

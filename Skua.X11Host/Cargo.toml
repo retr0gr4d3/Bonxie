@@ -9,4 +9,5 @@ name = "bonxie_x11"
 crate-type = ["cdylib"]
 
 [dependencies]
+libc = "0.2"
 x11rb = "0.13"
