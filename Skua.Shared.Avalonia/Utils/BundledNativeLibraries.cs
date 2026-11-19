@@ -27,7 +27,16 @@ public static class BundledNativeLibraries
         if (!Directory.Exists(nativeDir))
             return; // Development builds keep runtimes\ next to the exe, where .NET already looks first.
 
-        foreach (string library in Directory.EnumerateFiles(nativeDir, "*.dll"))
-            NativeLibrary.TryLoad(library, out _);
+        // Best effort: a library that won't load here, or a folder that can't be read, is left to the usual search by
+        // name, exactly as before this existed. Failing would stop the app opening in cases that work today; Avalonia,
+        // for one, falls back to software rendering when ANGLE won't load.
+        try
+        {
+            foreach (string library in Directory.EnumerateFiles(nativeDir, "*.dll"))
+                NativeLibrary.TryLoad(library, out _);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 }
