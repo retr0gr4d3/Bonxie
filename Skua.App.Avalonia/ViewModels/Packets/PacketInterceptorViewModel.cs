@@ -115,15 +115,7 @@ public partial class PacketInterceptorViewModel : BotControlViewModelBase
         {
             servers = new List<Server>
             {
-                new() { Name = "Artix", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Galanoth", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Safiria", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Twilly", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Twig", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Yorumi", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Yokai", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Espada", IP = "game.aq.com", Port = 5588 },
-                new() { Name = "Sir Ver", IP = "game.aq.com", Port = 5588 }
+                new() { Name = "SwordShine", IP = "130.162.189.229", Port = 5589 }
             };
         }
 
@@ -269,7 +261,7 @@ public partial class PacketInterceptorViewModel : BotControlViewModelBase
                 : Dns.GetHostAddresses(selectedServer.IP).FirstOrDefault()
                     ?? throw new InvalidOperationException($"Could not resolve server address: {selectedServer.IP}");
 
-            int port = selectedServer.Port != 0 ? selectedServer.Port : 5588;
+            int port = selectedServer.Port != 0 ? selectedServer.Port : 5589;
             _gameProxy.Destination = new IPEndPoint(ip, port);
             _gameProxy.Start();
 

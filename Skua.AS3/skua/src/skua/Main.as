@@ -33,7 +33,7 @@ public class Main extends MovieClip {
 
     public var game:*;
     public var external:Externalizer;
-    private var sURL:String = 'https://game.aq.com/game/';
+    private var sURL:String = 'https://swordshine.online/';
     private var versionUrl:String = (sURL + 'api/data/gameversion');
     private var loginURL:String = (sURL + 'api/login/now');
     private var sFile:String;
@@ -201,7 +201,7 @@ public class Main extends MovieClip {
         switch(event.target.name)
         {
             case "btCharPage":
-                this.external.call("openWebsite","https://account.aq.com/CharPage?id=" + event.target.parent.txtUserName.text);
+                this.external.call("openWebsite","https://swordshine.online/CharPage?id=" + event.target.parent.txtUserName.text);
                 return;
             case "btnWiki":
                 if (event.target.parent.parent.parent.name == "qRewardPrev") {

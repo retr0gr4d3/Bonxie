@@ -9,7 +9,7 @@ namespace Skua.Plugin.Omniscope;
 /// </summary>
 internal static class AqwMapSwfDownloader
 {
-    private const string MapRoot = "https://game.aq.com/game/gamefiles/maps/";
+    private const string MapRoot = "https://swordshine.online/gamefiles/maps/";
     private const string UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     private const long MaximumSwfBytes = 64L * 1024 * 1024;
     private const int MaximumRetries = 3;
@@ -129,7 +129,8 @@ internal static class AqwMapSwfDownloader
         Uri? directUri = null;
         if (Uri.TryCreate(value, UriKind.Absolute, out Uri? absoluteUri))
         {
-            bool aqwHost = absoluteUri.Host.Equals("game.aq.com", StringComparison.OrdinalIgnoreCase) ||
+            bool aqwHost = absoluteUri.Host.Equals("swordshine.online", StringComparison.OrdinalIgnoreCase) ||
+                absoluteUri.Host.Equals("game.aq.com", StringComparison.OrdinalIgnoreCase) ||
                 absoluteUri.Host.EndsWith(".aq.com", StringComparison.OrdinalIgnoreCase) ||
                 absoluteUri.Host.EndsWith(".aqworlds.com", StringComparison.OrdinalIgnoreCase);
             if (absoluteUri.Scheme is not ("http" or "https") || !aqwHost)
@@ -269,7 +270,7 @@ internal static class AqwMapSwfDownloader
         request.Headers.UserAgent.ParseAdd(UserAgent);
         request.Headers.Accept.ParseAdd("*/*");
         request.Headers.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
-        request.Headers.Referrer = new Uri("https://www.aq.com/");
+        request.Headers.Referrer = new Uri("https://swordshine.online/");
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
         return request;
     }

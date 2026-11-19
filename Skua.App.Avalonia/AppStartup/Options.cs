@@ -398,6 +398,7 @@ internal class Options
         { "SafeRelogin", "Adds a 1-minute 15-second ghost session delay before relogging." },
         { "ReloginTries", "Maximum number of login attempts before giving up." },
         { "LoginTimeout", "Maximum seconds to wait for authentication and world loading." },
+        { "AutoHandInQuests", "Turns in active quests once their requirements are met while no script is running. Reward-choice quests are skipped." },
         { "SkipCutscenes", "Automatically skips in-game story cutscenes and dialogs." },
         { "HeadlessMode", "Collapses the Flash viewport to 1x1 pixel to drastically reduce CPU and RAM." },
         { "ReloginServer", "The preferred server to reconnect to during auto-relogin." }

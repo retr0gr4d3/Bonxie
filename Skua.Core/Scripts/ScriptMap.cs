@@ -390,7 +390,7 @@ public partial class ScriptMap : IScriptMap
             sw.Restart();
             Task.Run(async () =>
             {
-                byte[] fileBytes = await HttpClients.GetAQContent.GetByteArrayAsync($"https://game.aq.com/game/gamefiles/maps/{FilePath}");
+                byte[] fileBytes = await HttpClients.GetAQContent.GetByteArrayAsync($"https://swordshine.online/gamefiles/maps/{FilePath}");
                 await File.WriteAllBytesAsync(Path.Combine(_cachePath, fileName), fileBytes);
             }).Wait();
             Trace.WriteLine($"Download of \"{fileName}\" took {sw.Elapsed:s\\.ff}s");

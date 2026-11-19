@@ -1,7 +1,8 @@
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Messaging;
 using CommunityToolkit.Mvvm.Messaging.Messages;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Skua.Core.Flash;
 using Skua.Core.Interfaces;
 using Skua.Core.Messaging;
@@ -25,7 +26,8 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
         Lazy<IScriptInventoryHelper> invHelper,
         Lazy<IScriptLite> lite,
         Lazy<IScriptMap> map,
-        Lazy<IScriptDrop> drop)
+        Lazy<IScriptDrop> drop,
+        Lazy<ILogService> logger)
     {
         _lazyFlash = flash;
         _lazyWait = wait;
@@ -33,14 +35,26 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
         _lazyPlayer = player;
         _lazySend = send;
         _lazyInventory = inventory;
+        _lazyTempInv = tempInv;
         _lazyInvHelper = invHelper;
         _lazyLite = lite;
         _lazyMap = map;
         _lazyDrop = drop;
+        _lazyLogger = logger;
 
         StrongReferenceMessenger.Default.Register<ScriptQuest, ScriptStoppedMessage, int>(this, (int)MessageChannels.ScriptStatus, OnScriptStopped);
         StrongReferenceMessenger.Default.Register<ScriptQuest, LogoutMessage, int>(this, (int)MessageChannels.GameEvents, OnLogout);
+        StrongReferenceMessenger.Default.Register<ScriptQuest, LoginMessage, int>(this, (int)MessageChannels.GameEvents, OnLogin);
+        StrongReferenceMessenger.Default.Register<ScriptQuest, ScriptStartedMessage, int>(this, (int)MessageChannels.ScriptStatus, (r, _) => r._scriptRunning = true);
+
+        EnsureQuestThread();
     }
+
+    // Scripts do their own turn-ins, so auto hand-in (Game Options) stands down while one runs
+    private volatile bool _scriptRunning;
+    // Quests auto hand-in won't touch until next login: reward-choice quests, and ones the server refused
+    // (otherwise a refused quest is re-sent every few seconds forever).
+    private readonly HashSet<int> _autoHandInSkip = new();
 
     private readonly Lazy<IFlashUtil> _lazyFlash;
     private readonly Lazy<IScriptWait> _lazyWait;
@@ -52,6 +66,10 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
     private readonly Lazy<IScriptLite> _lazyLite;
     private readonly Lazy<IScriptMap> _lazyMap;
     private readonly Lazy<IScriptDrop> _lazyDrop;
+    private readonly Lazy<ILogService> _lazyLogger;
+    private readonly Lazy<IScriptTempInv> _lazyTempInv;
+    private IScriptTempInv TempInv => _lazyTempInv.Value;
+    private ILogService Logger => _lazyLogger.Value;
     private IFlashUtil Flash => _lazyFlash.Value;
     private IScriptWait Wait => _lazyWait.Value;
     private IScriptOption Options => _lazyOptions.Value;
@@ -63,7 +81,6 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
     private IScriptMap Map => _lazyMap.Value;
     private IScriptDrop Drop => _lazyDrop.Value;
 
-    private Thread? _questThread;
     private CancellationTokenSource? _questsCTS;
     private CancellationTokenSource? _loadQuestsCTS;
     private readonly object _cacheLockObj = new();
@@ -71,8 +88,45 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
 
     public int RegisterCompleteInterval { get; set; } = 2000;
 
-    [ObjectBinding("world.questTree", Default = "new()")]
-    private Dictionary<int, Quest> _quests = new();
+    // Parsed quest by quest: one quest the model can't read (common on private servers like SwordShine) used to make
+    // the whole tree deserialize to {} - scripts then never saw their quests (re-opening the quest box) and nothing turned in.
+    private Dictionary<int, Quest> Quests
+    {
+        get
+        {
+            Dictionary<int, Quest> quests = new();
+            string? json = Flash.GetGameObject("world.questTree");
+            JObject tree;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(json) || JToken.Parse(json) is not JObject parsed)
+                    return quests;
+                tree = parsed;
+            }
+            catch (JsonException)
+            {
+                return quests; // not logged in / no world yet
+            }
+
+            foreach (JProperty entry in tree.Properties())
+            {
+                if (!int.TryParse(entry.Name, out int id) || entry.Value.Type != JTokenType.Object)
+                    continue;
+                try
+                {
+                    if (entry.Value.ToObject<Quest>() is { } quest)
+                        quests[id] = quest;
+                }
+                catch (Exception ex)
+                {
+                    if (_unreadableQuestsLogged.Add(id))
+                        Logger.DebugLog($"[Quests] Couldn't read quest {id} from world.questTree: {ex.Message}");
+                }
+            }
+            return quests;
+        }
+    }
+    private readonly HashSet<int> _unreadableQuestsLogged = new();
 
     private List<Quest>? _cachedTree;
     private int _lastTreeUpdate;
@@ -262,6 +316,23 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
         return Completed.Contains(q => q.ID == id);
     }
 
+    // Ready to turn in: the game flagged it complete ("c"), or every turn-in item is in inventory/temp inventory
+    // (private servers such as SwordShine don't always set the "c" status).
+    private bool IsReady(Quest quest)
+    {
+        if (quest.Status == "c")
+            return true;
+        try
+        {
+            List<ItemBase> reqs = quest.Requirements;
+            return reqs.Count > 0 && reqs.All(r => TempInv.Contains(r.ID, r.Quantity) || Inventory.Contains(r.ID, r.Quantity));
+        }
+        catch (Exception)
+        {
+            return false; // malformed quest data: treat as not ready
+        }
+    }
+
     public bool CanCompleteFullCheck(int id)
     {
         if (CanComplete(id))
@@ -412,24 +483,34 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
                 catch { /* Quest failed to load, ignore */ }
             }
         }, token);
-        if (!_questThread?.IsAlive ?? true)
+        EnsureQuestThread();
+    }
+
+    // One poll loop at a time, tracked by its CTS (a Thread running an async lambda ends at its first await,
+    // so IsAlive used to read false and every call started another loop that nothing could cancel).
+    private void EnsureQuestThread()
+    {
+        CancellationTokenSource cts;
+        lock (_registeredLock)
         {
-            _questThread = new(async () =>
-            {
-                _questsCTS = new();
-                try
-                {
-                    await _Poll(_questsCTS.Token);
-                }
-                catch { /* ignored */ }
-                _questsCTS?.Dispose();
-                _questsCTS = null;
-            })
-            {
-                Name = "Quest Thread"
-            };
-            _questThread.Start();
+            if (_questsCTS is not null)
+                return;
+            cts = _questsCTS = new();
         }
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                await _Poll(cts.Token);
+            }
+            catch { /* ignored */ }
+            lock (_registeredLock)
+            {
+                if (_questsCTS == cts)
+                    _questsCTS = null;
+            }
+        });
     }
 
     public void UnregisterQuests(params int[] ids)
@@ -466,9 +547,9 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
         _loadQuestsCTS?.Dispose();
         _loadQuestsCTS = null;
 
-        if (_questThread?.IsAlive ?? false)
+        if (_questsCTS is { } cts)
         {
-            _questsCTS?.Cancel();
+            cts.Cancel();
             Wait.ForTrue(() => _questsCTS is null, 20);
         }
     }
@@ -486,6 +567,26 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
                     int[] registered;
                     lock (_registeredLock)
                         registered = _registered.Items.ToArray();
+
+                    // Auto hand-in: active quests that are ready, appended after the registered ones.
+                    // Choose-a-reward quests (reward iType 2, same check CoreBots uses) are left for the player.
+                    if (Options.AutoHandInQuests && !_scriptRunning)
+                    {
+                        List<int> ready = new();
+                        foreach (Quest q in Active.Where(IsReady))
+                        {
+                            if (registered.Contains(q.ID) || _autoHandInSkip.Contains(q.ID))
+                                continue;
+                            if (q.SimpleRewards?.Any(r => r.Type == 2) == true)
+                            {
+                                _autoHandInSkip.Add(q.ID);
+                                Logger.ScriptLog($"[Auto Hand-In] Skipping {q} - it has a reward choice, turn it in yourself.");
+                                continue;
+                            }
+                            ready.Add(q.ID);
+                        }
+                        registered = [.. registered, .. ready];
+                    }
 
                     if (registered.Length > 0)
                         await _CompleteQuest(registered, token).ConfigureAwait(false);
@@ -577,11 +678,8 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
             }
 
             // Check if requirements are met
-            if (!CanComplete(quest))
-                continue;
-
             Quest? questData = Tree.Find(q => q.ID == quest);
-            if (questData == null)
+            if (questData == null || !IsReady(questData))
                 continue;
 
             int turnIns = questData.Once || !string.IsNullOrEmpty(questData.Field) ? 1 :
@@ -594,7 +692,7 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
             Wait.ForActionCooldown(GameActions.TryQuestComplete);
 
             // Snapshot check: ensure items still in inventory right before packet send
-            if (!CanComplete(quest))
+            if (!IsReady(questData))
                 continue;
 
             Send.Packet($"%xt%zm%tryQuestComplete%{Map.RoomID}%{quest}%{rewardId}%false%{turnIns}%wvz%");
@@ -609,8 +707,22 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
             await Wait.ForTrueAsync(() => !IsInProgress(quest), 20, token: token);
             await Task.Delay(Options.ActionDelay, token);
 
-            // Re-accept if ReacceptQuest is disabled (otherwise game auto-accepts)
-            if (!Lite.ReacceptQuest)
+            bool isRegistered;
+            lock (_registeredLock)
+                isRegistered = _registered.Items.Contains(quest);
+            if (!isRegistered)
+            {
+                if (IsInProgress(quest))
+                {
+                    _autoHandInSkip.Add(quest);
+                    Logger.ScriptLog($"[Auto Hand-In] Server didn't accept {questData}, won't retry it until next login.");
+                }
+                else
+                    Logger.ScriptLog($"[Auto Hand-In] Turned in {questData}");
+            }
+
+            // Re-accept if ReacceptQuest is disabled (otherwise game auto-accepts); auto hand-ins aren't re-accepted
+            if (!Lite.ReacceptQuest && isRegistered)
             {
                 Wait.ForActionCooldown(GameActions.AcceptQuest);
                 Accept(quest);
@@ -676,7 +788,16 @@ public partial class ScriptQuest : ObservableRecipient, IScriptQuest
 
     private void OnScriptStopped(ScriptQuest recipient, ScriptStoppedMessage message)
     {
+        recipient._scriptRunning = false;
         recipient.UnregisterAllQuests();
+        recipient.EnsureQuestThread();
+    }
+
+    // The poll loop idles cheaply when nothing is registered and auto hand-in is off, so keep it running while logged in.
+    private void OnLogin(ScriptQuest recipient, LoginMessage message)
+    {
+        recipient._autoHandInSkip.Clear();
+        recipient.EnsureQuestThread();
     }
 
     private void OnLogout(ScriptQuest recipient, LogoutMessage message)

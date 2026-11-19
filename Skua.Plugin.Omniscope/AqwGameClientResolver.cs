@@ -12,7 +12,8 @@ namespace Skua.Plugin.Omniscope;
 /// </summary>
 internal static class AqwGameClientResolver
 {
-    private const string GameRoot = "https://game.aq.com/game/";
+    private const string GameRoot = "https://swordshine.online/";
+    // ponytail: the Game{N}.swf CDN probe fallback is AQW-only (SwordShine names clients like GameSwordShine532b.swf), so on SwordShine only the gameversion API path works
     private const int StartNumber = 3097;
     private const int MaximumRetries = 5;
     private const long MaximumSwfBytes = 128L * 1024 * 1024;

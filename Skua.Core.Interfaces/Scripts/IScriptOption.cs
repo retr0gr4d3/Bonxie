@@ -199,6 +199,12 @@ public interface IScriptOption : INotifyPropertyChanged
     bool RestPackets { get; set; }
 
     /// <summary>
+    /// Turns in any active quest whose requirements are met, while no script is running (scripts do their own turn-ins).
+    /// Choose-a-reward quests are skipped.
+    /// </summary>
+    bool AutoHandInQuests { get; set; }
+
+    /// <summary>
     /// When enabled, there will be a 1-minute 15-second delay before the player is re-logged in.
     /// </summary>
     bool SafeRelogin { get; set; }

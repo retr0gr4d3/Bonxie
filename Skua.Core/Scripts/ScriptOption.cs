@@ -130,6 +130,9 @@ public partial class ScriptOption : ObservableRecipient, IScriptOption, IOptionD
     private bool _restPackets;
 
     [ObservableProperty]
+    private bool _autoHandInQuests = true;
+
+    [ObservableProperty]
     private bool _safeTimings = true;
 
     [CallBinding("skipCutscenes", UseValue = false, Get = false, HasSetter = true)]

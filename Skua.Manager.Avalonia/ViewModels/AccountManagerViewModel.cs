@@ -972,7 +972,7 @@ public sealed partial class AccountManagerViewModel : BotControlViewModelBase
     {
         try
         {
-            string response = await ValidatedHttpExtensions.GetStringAsync(HttpClients.GetAQContent, "https://content.aq.com/game/api/data/servers");
+            string response = await ValidatedHttpExtensions.GetStringAsync(HttpClients.GetAQContent, "https://swordshine.online/api/data/servers");
 
             List<Server>? servers = JsonConvert.DeserializeObject<List<Server>>(response);
             if (servers == null || servers.Count == 0)

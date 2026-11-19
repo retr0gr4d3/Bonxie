@@ -140,7 +140,13 @@ public class Quest
     /// <summary>
     /// The items used to turn in the quest.
     /// </summary>
-    public List<ItemBase> Requirements => _reqCache ??= _reqs.Select(x => (x.Quantity = _turnin.Find(y => y.ID == x.ID).Quantity) != -1 ? x : x).ToList();
+    public List<ItemBase> Requirements => _reqCache ??= _reqs.Select(x =>
+    {
+        // Servers can omit an item from "turnin"; keep the item's own quantity instead of throwing
+        if (_turnin?.Find(y => y.ID == x.ID) is { } turnin)
+            x.Quantity = turnin.Quantity;
+        return x;
+    }).ToList();
 
     /// <summary>
     /// The items given as a reward for completing the quest.

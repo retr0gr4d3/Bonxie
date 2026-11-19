@@ -170,7 +170,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
 
         try
         {
-            string response = await ValidatedHttpExtensions.GetStringAsync(HttpClients.GetAQContent, "https://content.aq.com/game/api/data/servers")
+            string response = await ValidatedHttpExtensions.GetStringAsync(HttpClients.GetAQContent, "https://swordshine.online/api/data/servers")
                 .ConfigureAwait(false);
 
             List<Server>? servers = JsonConvert.DeserializeObject<List<Server>>(response);
@@ -474,7 +474,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
             }
 
             Thread.Sleep(100);
-            try { Flash.Call("loadPolicyFile", ip, 5588); } catch { }
+            try { Flash.Call("loadPolicyFile", ip, 5589); } catch { }
             try { Flash.Call("killLoginModals"); } catch { }
             ConnectIP(ip);
 
@@ -531,7 +531,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
             }
 
             Thread.Sleep(100);
-            int port = server.Port > 0 ? server.Port : 5588;
+            int port = server.Port > 0 ? server.Port : 5589;
             try { Flash.Call("loadPolicyFile", server.IP, port); } catch { }
             try { Flash.Call("killLoginModals"); } catch { }
             ConnectToServer(JsonConvert.SerializeObject(server));
@@ -789,7 +789,7 @@ public partial class ScriptServers : ObservableRecipient, IScriptServers
                 token.ThrowIfCancellationRequested();
 
                 // Pre-connection security policy & modal cleanup
-                int port = targetServer.Port > 0 ? targetServer.Port : 5588;
+                int port = targetServer.Port > 0 ? targetServer.Port : 5589;
                 try { Flash.Call("loadPolicyFile", targetServer.IP, port); } catch { }
                 try { Flash.Call("killLoginModals"); } catch { }
 
