@@ -175,6 +175,7 @@ internal static class Program
             {
                 AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: false);
             }
+            BundledNativeLibraries.Load();
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
         catch (Exception ex)
