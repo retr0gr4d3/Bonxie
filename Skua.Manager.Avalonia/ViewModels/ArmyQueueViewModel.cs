@@ -666,12 +666,20 @@ public partial class ArmyQueueViewModel : ObservableRecipient
     [RelayCommand]
     public async Task StartQueue()
     {
+        await StartQueueAsync(false);
+    }
+
+    public async Task StartQueueAsync(bool isAutomated = false)
+    {
         if (IsRunning)
             return;
 
         if (Steps.Count == 0 || Steps.All(s => s.Members.Count == 0))
         {
-            _dialogService.ShowMessageBox("Please add at least one squad with accounts to the queue.", "Empty Queue");
+            if (!isAutomated)
+                _dialogService.ShowMessageBox("Please add at least one squad with accounts to the queue.", "Empty Queue");
+            else
+                throw new InvalidOperationException("Please add at least one squad with accounts to the queue.");
             return;
         }
 
@@ -681,16 +689,21 @@ public partial class ArmyQueueViewModel : ObservableRecipient
 
         try
         {
-            await RunQueueAsync(token);
+            await RunQueueAsync(token, isAutomated);
         }
         catch (OperationCanceledException)
         {
             StatusText = "Army Queue was stopped.";
+            if (isAutomated)
+                throw;
         }
         catch (Exception ex)
         {
             StatusText = $"Queue Error: {ex.Message}";
-            _dialogService.ShowMessageBox($"Queue encountered an error: {ex.Message}", "Queue Execution Error");
+            if (!isAutomated)
+                _dialogService.ShowMessageBox($"Queue encountered an error: {ex.Message}", "Queue Execution Error");
+            if (isAutomated)
+                throw;
         }
         finally
         {
@@ -710,14 +723,57 @@ public partial class ArmyQueueViewModel : ObservableRecipient
 
         if (_dialogService.ShowMessageBox("Are you sure you want to stop the running Army Queue?", "Stop Queue", true) == true)
         {
-            _pauseTcs?.TrySetCanceled();
-            _queueCts?.Cancel();
-            IsPaused = false;
-            StatusText = "Stopping Army Queue...";
+            StopQueueDirect();
         }
     }
 
-    private async Task RunQueueAsync(CancellationToken token)
+    public void StopQueueDirect()
+    {
+        if (!IsRunning || _queueCts == null)
+            return;
+
+        _pauseTcs?.TrySetCanceled();
+        _queueCts?.Cancel();
+        IsPaused = false;
+        StatusText = "Stopping Army Queue...";
+    }
+
+    public void PauseResumeQueue()
+    {
+        if (!IsRunning) return;
+        if (IsPaused)
+            ResumeQueue();
+        else
+            PauseQueue();
+    }
+
+    public void SetStepScriptDirect(int stepIndex, string? scriptPath)
+    {
+        if (stepIndex >= 0 && stepIndex < Steps.Count)
+        {
+            Steps[stepIndex].StepScriptPath = scriptPath;
+            AutoSave();
+        }
+    }
+
+    public void AddStepDirect(string squadName)
+    {
+        ArmyQueueStepViewModel step = new(string.IsNullOrWhiteSpace(squadName) ? ("Squad " + (Steps.Count + 1)) : squadName);
+        AttachStepEvents(step);
+        Steps.Add(step);
+        SelectedStep = step;
+        AutoSave();
+    }
+
+    public void RemoveStepDirect(int stepIndex)
+    {
+        if (stepIndex >= 0 && stepIndex < Steps.Count)
+        {
+            RemoveStepSpecific(Steps[stepIndex]);
+        }
+    }
+
+    private async Task RunQueueAsync(CancellationToken token, bool isAutomated = false)
     {
         int totalSteps = Steps.Count;
         ActiveStepIndex = 0;
@@ -876,7 +932,10 @@ public partial class ArmyQueueViewModel : ObservableRecipient
 
         StatusText = "All Army Queue squads completed successfully!";
         ProgressValue = 100;
-        _dialogService.ShowMessageBox("All scheduled Army Queue squads have completed their runs!", "Army Queue Finished");
+        if (!isAutomated)
+        {
+            _dialogService.ShowMessageBox("All scheduled Army Queue squads have completed their runs!", "Army Queue Finished");
+        }
     }
 
     private Process? LaunchMemberProcess(IAccountItemViewModel acc, string scriptPath, string? optionsStorage = null)

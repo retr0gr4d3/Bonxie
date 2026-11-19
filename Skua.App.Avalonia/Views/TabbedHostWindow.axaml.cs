@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -26,6 +27,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -33,6 +35,8 @@ namespace Skua.App.Avalonia.Views;
 
 public partial class TabbedHostWindow : Window
 {
+    private static readonly DataFormat<TabItem> TabItemDataFormat = DataFormat.CreateInProcessFormat<TabItem>("skua-tab-item");
+
     #region Win32 API
 
     public delegate IntPtr SubclassProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam, nuint uIdSubclass, IntPtr dwRefData);
@@ -46,6 +50,7 @@ public partial class TabbedHostWindow : Window
     private SubclassProc? _subclassProc;
     private const int WM_SKUA_CHILD_READY = 0x0400 + 440;
     private const int WM_SKUA_CHILD_DPICHANGED = 0x0400 + 441;
+    private const int WM_SKUA_CHILD_OPTION = 0x0400 + 466;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
@@ -89,6 +94,22 @@ public partial class TabbedHostWindow : Window
     private static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern bool IsWindowEnabled(IntPtr hWnd);
+
+    private delegate void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint idEventThread, uint dwmsEventTime);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    private WinEventProc? _foregroundHookProc;
+    private IntPtr _foregroundHook = IntPtr.Zero;
+
+    [DllImport("user32.dll")]
     public static extern IntPtr BeginDeferWindowPos(int nNumWindows);
 
     [DllImport("user32.dll")]
@@ -117,6 +138,7 @@ public partial class TabbedHostWindow : Window
     private const int GWL_HWNDPARENT = -8;
     private const int GWL_EXSTYLE = -20;
     private const uint GW_OWNER = 4;
+    private const uint GW_HWNDPREV = 3;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
@@ -222,9 +244,45 @@ public partial class TabbedHostWindow : Window
     {
         public Process Process { get; set; } = null!;
         public IntPtr ChildHwnd { get; set; } = IntPtr.Zero;
+        public string? Username { get; set; }
+        public Action<bool>? LaunchCompletion { get; set; }
+        public FileStream? AccountReservation { get; set; }
         public bool IsThrottled { get; set; } = false;
         public bool IsCustomNamed { get; set; } = false;
     }
+
+    private static FileStream? TryAcquireAccountReservation(string username)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "BonxieAccountReservations");
+        string accountKey = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(username.Trim().ToUpperInvariant())));
+        string reservationPath = Path.Combine(directory, $"{accountKey}.lock");
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            FileStream reservation = new(reservationPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            reservation.SetLength(0);
+            using (StreamWriter writer = new(reservation, System.Text.Encoding.UTF8, 1024, leaveOpen: true))
+            {
+                writer.WriteLine($"{Environment.ProcessId}|{DateTime.UtcNow:O}");
+                writer.Flush();
+            }
+            reservation.Position = 0;
+            return reservation;
+        }
+        catch (IOException)
+        {
+            // Another Bonxie host currently owns this account reservation.
+            return null;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Trace.WriteLine($"Could not reserve account '{username}': {ex.Message}");
+            return null;
+        }
+    }
+
+    public static TabbedHostWindow? Instance { get; private set; }
 
     private readonly string[] _initialArgs;
     private bool _initialInstanceStarted = false;
@@ -238,6 +296,12 @@ public partial class TabbedHostWindow : Window
     private readonly CancellationTokenSource _pipeCts = new();
     private bool _isGridViewEnabled = false;
     private TabItem? _lastSelectedTab;
+    private enum GridLayoutMode
+    {
+        Auto,
+        Horizontal,
+        Vertical
+    }
     private IntPtr _hostHwnd = IntPtr.Zero;
     private int _lastX = -99999, _lastY = -99999, _lastW = -99999, _lastH = -99999;
     private IntPtr _lastActiveHwnd = IntPtr.Zero;
@@ -263,6 +327,18 @@ public partial class TabbedHostWindow : Window
 
     private Queue<Action> _spawnQueue = new Queue<Action>();
     private bool _isSpawning = false;
+    private readonly List<(string Username, string DisplayName)> _quickLaunchAccounts = new();
+    private readonly List<GroupData> _quickLaunchGroups = new();
+    private readonly HashSet<string> _quickLaunchSelection = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _quickLaunchPending = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<Action<bool>>> _quickLaunchPendingCallbacks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _quickLaunchFailed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (Border Bubble, TextBlock Text)> _quickLaunchStatusBubbles = new(StringComparer.OrdinalIgnoreCase);
+    private int _quickLaunchBatchId;
+    private int _quickLaunchBatchTotal;
+    private int _quickLaunchBatchCompleted;
+    private int _quickLaunchBatchAlreadyOpen;
+    private int _quickLaunchBatchFailed;
 
     private void EnqueueSpawn(Action spawnAction)
     {
@@ -330,6 +406,8 @@ public partial class TabbedHostWindow : Window
     {
         _initialArgs = initialArgs ?? Array.Empty<string>();
         InitializeComponent();
+        HotKeys.RegisterHotkey("OpenQuickLaunch", new CommunityToolkit.Mvvm.Input.RelayCommand(OpenQuickLaunch));
+        AccountQuickLaunchSearch.KeyDown += AccountQuickLaunchSearch_KeyDown;
         LoadArmyJumpSettings();
         Title = "Bonxie Beta 7";
         MainTitleBar.TitleText = Title;
@@ -358,6 +436,12 @@ public partial class TabbedHostWindow : Window
         var options = Ioc.Default.GetRequiredService<IScriptOption>();
         MiscOptionsMenu.DataContext = options;
         options.PropertyChanged += Options_PropertyChanged;
+        // ShowFPS reads ui.mcFPS.visible from Flash, which the host doesn't have, so the host keeps this toggle's state itself.
+        MenuShowFps.PropertyChanged += (s, e) =>
+        {
+            if (e.Property == MenuItem.IsCheckedProperty)
+                BroadcastOption(11, MenuShowFps.IsChecked);
+        };
 
         Opened += TabbedHostWindow_Opened;
         PositionChanged += (s, e) => OnWindowPositionChanged(e.Point);
@@ -368,6 +452,30 @@ public partial class TabbedHostWindow : Window
         Activated += (s, e) => { ScheduleReposition(); UpdateTabScrollButtons(); };
         Closing += OnWindowClosing;
         Closed += OnWindowClosed;
+
+        Instance = this;
+        try
+        {
+            var remote = Ioc.Default.GetService<IRemoteControlService>();
+            if (remote != null)
+            {
+                remote.ActiveChildPidProvider = () => GetActiveChildPid();
+                remote.SelectChildPidAction = pid => SelectTabByPid(pid);
+                remote.FocusChildPidAction = pid => FocusTabByPid(pid);
+                remote.CloseChildPidAction = pid => CloseTabByPid(pid);
+                remote.LaunchAccountAction = (user, pass, srv) => LaunchAccount(user, pass, srv);
+                remote.LaunchGroupAction = group => LaunchGroup(group);
+                remote.StartAllScriptsAction = () => StartAllScripts();
+                remote.StopAllScriptsAction = () => StopAllScripts();
+                remote.LoadScriptAllAction = path => BroadcastScriptAction(path, WM_SKUA_LOAD_SCRIPT);
+                remote.HeadlessAllAction = enabled => HeadlessAll(enabled);
+                remote.ReloginAllAction = () => ReloginAll();
+                remote.BroadcastArmySchedulerAction = playlistJson => BroadcastArmyScheduler(playlistJson);
+                remote.StopArmySchedulerAction = () => StopArmyScheduler();
+                remote.TabsInfoProvider = () => GetTabsInfoList();
+            }
+        }
+        catch { }
 
         StrongReferenceMessenger.Default.Register<TabbedHostWindow, LoadScriptMessage, int>(this, (int)MessageChannels.ScriptStatus, (r, m) => r.BroadcastScriptAction(m.Path, WM_SKUA_LOAD_SCRIPT));
         StrongReferenceMessenger.Default.Register<TabbedHostWindow, ScriptSchedulerViewModel.ArmySchedulerMessage>(this, (r, m) => r.OnArmySchedulerStart(m));
@@ -410,6 +518,7 @@ public partial class TabbedHostWindow : Window
     {
         if (_isClosing || _tabs.Count == 0) return;
 
+        UpdateQuickLaunchStatuses();
         var entries = _tabs.Select(kvp => (Tab: kvp.Key, Pid: kvp.Value?.Process?.Id ?? 0)).ToList();
 
         Task.Run(() =>
@@ -419,6 +528,7 @@ public partial class TabbedHostWindow : Window
 
             var updates = new List<(TabItem Tab, string Username)>();
             var locations = new List<(int Pid, ArmyClientLocation Location)>();
+            var loggedOutPids = new List<int>();
 
             foreach (var (tab, pid) in entries)
             {
@@ -428,15 +538,32 @@ public partial class TabbedHostWindow : Window
                     string file = Path.Combine(dir, $"{pid}.txt");
                     if (File.Exists(file))
                     {
-                        string username = File.ReadAllText(file).Trim();
-                        if (!string.IsNullOrWhiteSpace(username))
-                            updates.Add((tab, username));
+                        using Process process = Process.GetProcessById(pid);
+                        if (!process.HasExited
+                            && string.Equals(process.ProcessName, Process.GetCurrentProcess().ProcessName, StringComparison.OrdinalIgnoreCase)
+                            && File.GetLastWriteTimeUtc(file) >= process.StartTime.ToUniversalTime())
+                        {
+                            string username = File.ReadAllText(file).Trim();
+                            if (!string.IsNullOrWhiteSpace(username))
+                                updates.Add((tab, username));
+                        }
                     }
 
                     string locationFile = Path.Combine(dir, $"{pid}.location.json");
                     if (File.Exists(locationFile))
                     {
-                        ArmyClientLocation? location = JsonSerializer.Deserialize<ArmyClientLocation>(File.ReadAllText(locationFile));
+                        string locationJson = File.ReadAllText(locationFile);
+                        using JsonDocument locationDocument = JsonDocument.Parse(locationJson);
+                        if (locationDocument.RootElement.TryGetProperty("LoggedIn", out JsonElement loggedIn)
+                            && loggedIn.ValueKind == JsonValueKind.False)
+                        {
+                            loggedOutPids.Add(pid);
+                            // Clear the shared identity record so every host stops treating this
+                            // still-open but logged-out client as an active account.
+                            File.WriteAllText(Path.Combine(dir, $"{pid}.txt"), string.Empty);
+                        }
+
+                        ArmyClientLocation? location = JsonSerializer.Deserialize<ArmyClientLocation>(locationJson);
                         if (location != null
                             && !string.IsNullOrWhiteSpace(location.Map)
                             && location.UpdatedUtc >= DateTime.UtcNow.AddSeconds(-5))
@@ -446,19 +573,42 @@ public partial class TabbedHostWindow : Window
                 catch { }
             }
 
-            if ((updates.Count > 0 || locations.Count > 0) && !_isClosing)
+            if ((updates.Count > 0 || locations.Count > 0 || loggedOutPids.Count > 0) && !_isClosing)
             {
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (_isClosing) return;
+
+                    foreach (int pid in loggedOutPids)
+                    {
+                        TabInfo? tabInfo = _tabs.Values.FirstOrDefault(info => info.Process?.Id == pid);
+                        tabInfo?.AccountReservation?.Dispose();
+                        if (tabInfo is not null)
+                            tabInfo.AccountReservation = null;
+
+                        updates.RemoveAll(update =>
+                            _tabs.TryGetValue(update.Tab, out TabInfo? updateInfo)
+                            && updateInfo.Process?.Id == pid);
+                    }
 
                     foreach (var (pid, location) in locations)
                         RecordClientLocation(pid, location);
 
                     foreach (var (tab, username) in updates)
                     {
-                        if (_tabs.TryGetValue(tab, out TabInfo? tInfo) && tInfo.IsCustomNamed)
-                            continue;
+                        if (_tabs.TryGetValue(tab, out TabInfo? tInfo))
+                        {
+                            // Complete the request when the process reports its logged-in identity.
+                            if (tInfo.LaunchCompletion != null)
+                                CompleteTabLaunch(tInfo, string.Equals(tInfo.Username, username, StringComparison.OrdinalIgnoreCase));
+
+                            // Keep the actual logged-in identity even when the tab has a custom display name.
+                            tInfo.Username = username;
+                            if (tInfo.AccountReservation is null)
+                                tInfo.AccountReservation = TryAcquireAccountReservation(username);
+                            if (tInfo.IsCustomNamed)
+                                continue;
+                        }
 
                         if (tab.Header is StackPanel headerPanel)
                         {
@@ -486,6 +636,11 @@ public partial class TabbedHostWindow : Window
             HotKeys.HostHwnd = _hostHwnd;
             _subclassProc = HostWindowSubclassProc;
             SetWindowSubclass(_hostHwnd, _subclassProc, 1, IntPtr.Zero);
+
+            // Clicking a tab's game window activates it, and Windows lifts it above an open host dialog.
+            _foregroundHookProc = OnForegroundChanged;
+            _foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero,
+                _foregroundHookProc, 0, 0, WINEVENT_OUTOFCONTEXT);
         }
 
         HotKeys.RegisterSkuaPid((uint)Environment.ProcessId);
@@ -633,6 +788,20 @@ public partial class TabbedHostWindow : Window
             return IntPtr.Zero;
         }
 
+        // A tab changed ShowFPS itself (hotkey, its options window, a script): match the checkbox, which re-broadcasts
+        // it to every tab.
+        if (uMsg == WM_SKUA_CHILD_OPTION)
+        {
+            int optionId = wParam.ToInt32();
+            bool value = lParam.ToInt32() == 1;
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (!_isClosing && optionId == 11)
+                    MenuShowFps.IsChecked = value;
+            });
+            return IntPtr.Zero;
+        }
+
         // A child moved onto a monitor with another scale may have resized itself. Its new size is invisible to the
         // position cache, so place it again.
         if (uMsg == WM_SKUA_CHILD_DPICHANGED)
@@ -665,7 +834,7 @@ public partial class TabbedHostWindow : Window
         return DefSubclassProc(hWnd, uMsg, wParam, lParam);
     }
 
-    private const int WM_SKUA_GAMEONLY = 0x0400 + 466;
+    private const int WM_SKUA_GAMEONLY = 0x0400 + 467; // 466 is upstream's WM_SKUA_CHILD_OPTION
     private WindowState _stateBeforeFullScreen = WindowState.Normal;
     private bool _gameOnly;
     private bool _gameOnlySetFullScreen;
@@ -763,15 +932,83 @@ public partial class TabbedHostWindow : Window
             PostMessage(childHwnd, WM_SKUA_GRIDVIEW, new IntPtr(1), IntPtr.Zero);
         }
 
+        // The tab re-applies it after it logs in (ScriptOption), so sending it before login is enough.
+        if (MenuShowFps.IsChecked)
+            PostMessage(childHwnd, WM_SKUA_SET_OPTION, new IntPtr(11), new IntPtr(1));
+
         DoReposition();
+        KeepGameWindowsBelowHostWindows();
 
         _isSpawning = false;
         ProcessNextSpawn();
     }
 
+    /// <summary>
+    /// Places the tabs' game windows directly below the host's own windows (message boxes and other dialogs).
+    /// The game windows belong to the tab processes but are owned by the host, so they share a z-order band with the
+    /// host's dialogs. A game window that attaches after a dialog opened, or a dialog opened while the client has no
+    /// foreground rights, otherwise leaves the modal dialog hidden behind the game and the client looks frozen.
+    /// </summary>
+    /// <summary>A modal dialog disables its owner, so a disabled host means one of its dialogs is open.</summary>
+    private bool IsHostModalOpen => _hostHwnd != IntPtr.Zero && !IsWindowEnabled(_hostHwnd);
+
+    private void OnForegroundChanged(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint idEventThread, uint dwmsEventTime)
+    {
+        if (_isClosing || hwnd == IntPtr.Zero || !IsHostModalOpen)
+            return;
+
+        GetWindowThreadProcessId(hwnd, out uint pid);
+        if (_tabs.Values.Any(t => t.Process != null && !t.Process.HasExited && (uint)t.Process.Id == pid))
+            KeepGameWindowsBelowHostWindows();
+    }
+
+    public void KeepGameWindowsBelowHostWindows()
+    {
+        if (_hostHwnd == IntPtr.Zero
+            || Application.Current?.ApplicationLifetime is not global::Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
+            return;
+
+        HashSet<IntPtr> hostWindows = new();
+        foreach (Window window in desktop.Windows)
+        {
+            if (window == this || !window.IsVisible)
+                continue;
+            IntPtr hwnd = window.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            if (hwnd != IntPtr.Zero)
+                hostWindows.Add(hwnd);
+        }
+        if (hostWindows.Count == 0)
+            return;
+
+        // Owned windows sit above their owner, so the first host window found walking up from the host is the lowest.
+        IntPtr lowest = IntPtr.Zero;
+        IntPtr cursor = _hostHwnd;
+        for (int i = 0; i < 256 && lowest == IntPtr.Zero; i++)
+        {
+            cursor = GetWindow(cursor, GW_HWNDPREV);
+            if (cursor == IntPtr.Zero)
+                break;
+            if (hostWindows.Contains(cursor))
+                lowest = cursor;
+        }
+        if (lowest == IntPtr.Zero)
+            return;
+
+        foreach (TabInfo info in _tabs.Values)
+        {
+            if (info.ChildHwnd != IntPtr.Zero)
+                SetWindowPos(info.ChildHwnd, lowest, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
     private void OnWindowClosing(object? sender, WindowClosingEventArgs e)
     {
         _isClosing = true;
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            UnhookWinEvent(_foregroundHook);
+            _foregroundHook = IntPtr.Zero;
+        }
         App.DisposeTrayIcon();
         try { _pipeCts.Cancel(); } catch { }
 
@@ -791,6 +1028,7 @@ public partial class TabbedHostWindow : Window
                 }
                 try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.txt")); } catch { }
                 try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.location.json")); } catch { }
+                try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.remote.txt")); } catch { }
                 _latestClientLocations.Remove(info.Process.Id);
                 _lastRecordedLocationByPid.Remove(info.Process.Id);
             }
@@ -800,6 +1038,7 @@ public partial class TabbedHostWindow : Window
 
     private void OnWindowClosed(object? sender, EventArgs e)
     {
+        Instance = null;
         App.DisposeTrayIcon();
         try
         {
@@ -831,7 +1070,7 @@ public partial class TabbedHostWindow : Window
                 {
                     pipeServer = new NamedPipeServerStream(
                         App.HostPipeName,
-                        PipeDirection.In,
+                        PipeDirection.InOut,
                         NamedPipeServerStream.MaxAllowedServerInstances,
                         PipeTransmissionMode.Byte,
                         PipeOptions.Asynchronous);
@@ -899,18 +1138,29 @@ public partial class TabbedHostWindow : Window
                             }
                             else
                             {
+                                bool launchRequest = line.StartsWith("LAUNCH|", StringComparison.Ordinal);
+                                string requestPayload = launchRequest ? line["LAUNCH|".Length..] : line;
                                 string[]? parsedArgs = null;
                                 try
                                 {
-                                    if (line.TrimStart().StartsWith("["))
-                                    {
-                                        parsedArgs = System.Text.Json.JsonSerializer.Deserialize<string[]>(line);
-                                    }
+                                    if (launchRequest || requestPayload.TrimStart().StartsWith("["))
+                                        parsedArgs = JsonSerializer.Deserialize<string[]>(requestPayload);
                                 }
-                                catch { }
+                                catch (JsonException) { }
 
-                                parsedArgs ??= ParseRawCommandLine(line);
-                                Dispatcher.UIThread.Post(() => AddNewInstance(parsedArgs));
+                                if (launchRequest)
+                                {
+                                    bool queued = parsedArgs is not null
+                                        && await Dispatcher.UIThread.InvokeAsync(() => AddNewInstance(parsedArgs));
+                                    using StreamWriter writer = new(pipeServer, System.Text.Encoding.UTF8, 1024, leaveOpen: true);
+                                    await writer.WriteLineAsync(queued ? "ACK" : "NACK");
+                                    await writer.FlushAsync();
+                                }
+                                else
+                                {
+                                    parsedArgs ??= ParseRawCommandLine(line);
+                                    Dispatcher.UIThread.Post(() => AddNewInstance(parsedArgs));
+                                }
                             }
                         }
                     }
@@ -1169,6 +1419,911 @@ public partial class TabbedHostWindow : Window
         AddNewInstance();
     }
 
+    private void AccountLaunchToggle_Click(object? sender, RoutedEventArgs e)
+    {
+        RefreshQuickLaunchAccounts();
+    }
+
+    private void AccountQuickLaunchSearch_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        FilterQuickLaunchAccounts();
+    }
+
+    private void AccountQuickLaunchSelectAll_Click(object? sender, RoutedEventArgs e)
+    {
+        string search = AccountQuickLaunchSearch.Text?.Trim() ?? string.Empty;
+        foreach ((string Username, string DisplayName) account in _quickLaunchAccounts)
+        {
+            if (string.IsNullOrWhiteSpace(search)
+                || account.Username.Contains(search, StringComparison.OrdinalIgnoreCase)
+                || account.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase))
+                _quickLaunchSelection.Add(account.Username);
+        }
+
+        FilterQuickLaunchAccounts();
+    }
+
+    private void AccountQuickLaunchClear_Click(object? sender, RoutedEventArgs e)
+    {
+        _quickLaunchSelection.Clear();
+        FilterQuickLaunchAccounts();
+    }
+
+    private void AccountQuickLaunchLaunch_Click(object? sender, RoutedEventArgs e)
+    {
+        LaunchSelectedQuickAccounts();
+    }
+
+    private void LaunchSelectedQuickAccounts()
+    {
+        List<string> selectedUsernames = _quickLaunchAccounts
+            .Where(account => _quickLaunchSelection.Contains(account.Username))
+            .Select(account => account.Username)
+            .ToList();
+        if (selectedUsernames.Count == 0)
+            return;
+
+        LaunchAccountBatch(selectedUsernames);
+        _quickLaunchSelection.Clear();
+        FilterQuickLaunchAccounts();
+    }
+
+    private void AccountQuickLaunchNewWindow_Click(object? sender, RoutedEventArgs e)
+    {
+        LaunchSelectedQuickAccountsInNewWindow();
+    }
+
+    private void LaunchSelectedQuickAccountsInNewWindow()
+    {
+        List<string> selectedUsernames = _quickLaunchAccounts
+            .Where(account => _quickLaunchSelection.Contains(account.Username))
+            .Select(account => account.Username)
+            .ToList();
+        if (selectedUsernames.Count == 0)
+            return;
+
+        LaunchAccountsInNewWindow(selectedUsernames);
+        _quickLaunchSelection.Clear();
+        FilterQuickLaunchAccounts();
+    }
+
+    private void AccountQuickLaunchGroupLaunch_Click(object? sender, RoutedEventArgs e)
+    {
+        if (AccountQuickLaunchGroupCombo.SelectedItem is not ComboBoxItem selectedItem
+            || selectedItem.Tag is not string groupName)
+            return;
+
+        GroupData? group = _quickLaunchGroups.FirstOrDefault(item =>
+            string.Equals(item.Name, groupName, StringComparison.OrdinalIgnoreCase));
+        if (group?.Accounts != null)
+            LaunchAccountBatch(group.Accounts);
+    }
+
+    private void AccountQuickLaunchGroupNewWindow_Click(object? sender, RoutedEventArgs e)
+    {
+        if (AccountQuickLaunchGroupCombo.SelectedItem is not ComboBoxItem selectedItem
+            || selectedItem.Tag is not string groupName)
+            return;
+
+        GroupData? group = _quickLaunchGroups.FirstOrDefault(item =>
+            string.Equals(item.Name, groupName, StringComparison.OrdinalIgnoreCase));
+        if (group?.Accounts != null)
+            LaunchAccountsInNewWindow(group.Accounts);
+    }
+
+    private void LaunchAccountsInNewWindow(IEnumerable<string> usernames)
+    {
+        List<string> accounts = usernames
+            .Where(username => !string.IsNullOrWhiteSpace(username))
+            .Select(username => username.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (accounts.Count == 0)
+            return;
+
+        _quickLaunchFailed.Clear();
+
+        try
+        {
+            ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+            settings.ReloadSettings();
+            Dictionary<string, AccountData>? savedAccounts = settings.Get<Dictionary<string, AccountData>>("ManagedAccounts");
+            string defaultServer = settings.Get("LastServer", "Twilly") ?? "Twilly";
+
+            List<string[]> launchArguments = [];
+            int alreadyRunning = 0;
+            int unavailable = 0;
+
+            foreach (string username in accounts)
+            {
+                // Never duplicate an account that is already running in any Bonxie host.
+                if (FindExistingAccountTab(username) is not null
+                    || IsExternalAccountRunning(username))
+                {
+                    alreadyRunning++;
+                    continue;
+                }
+
+                if (savedAccounts is null || !savedAccounts.TryGetValue(username, out AccountData? account) || account is null)
+                {
+                    unavailable++;
+                    continue;
+                }
+
+                string password = account.Password ?? string.Empty;
+                if (password.StartsWith("enc:", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        password = Skua.Core.Utils.CryptoUtils.Decrypt(password);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine($"Could not decrypt saved password for '{username}': {ex.Message}");
+                        unavailable++;
+                        continue;
+                    }
+                }
+
+                launchArguments.Add(["-u", username, "-p", password, "-s", defaultServer]);
+            }
+
+            if (launchArguments.Count == 0)
+            {
+                AccountQuickLaunchProgressPanel.IsVisible = true;
+                AccountQuickLaunchProgressBar.Value = 100;
+                AccountQuickLaunchProgressText.Text = alreadyRunning > 0
+                    ? $"No new window needed · {alreadyRunning} already running · {unavailable} unavailable"
+                    : $"No accounts available to launch · {unavailable} unavailable";
+                AccountQuickLaunchRetryButton.IsVisible = false;
+                return;
+            }
+
+            string hostInstanceId = Guid.NewGuid().ToString("N");
+            string executablePath = Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(executablePath))
+                throw new InvalidOperationException("Could not locate the Bonxie executable.");
+
+            ProcessStartInfo startInfo = new();
+            if (executablePath.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase)
+                || executablePath.EndsWith("dotnet", StringComparison.OrdinalIgnoreCase))
+            {
+                startInfo.FileName = executablePath;
+                startInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Bonxie.dll"));
+            }
+            else
+            {
+                startInfo.FileName = executablePath;
+            }
+
+            startInfo.ArgumentList.Add("--host-instance");
+            startInfo.ArgumentList.Add(hostInstanceId);
+            foreach (string argument in launchArguments[0])
+                startInfo.ArgumentList.Add(argument);
+
+            // Kept (not disposed here) so the background watcher below can tell when the new window closes.
+            Process newHost = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Windows did not return a process for the new Bonxie window.");
+
+            AccountQuickLaunchProgressPanel.IsVisible = true;
+            AccountQuickLaunchProgressBar.Value = 0;
+            AccountQuickLaunchProgressText.Text = "Opening separate Bonxie window...";
+            AccountQuickLaunchRetryButton.IsVisible = false;
+
+            _ = Task.Run(async () =>
+            {
+                using Process hostProcess = newHost;
+                int queued = 1;
+                for (int i = 1; i < launchArguments.Count; i++)
+                {
+                    // Stops retrying the pipe as soon as the new window exits.
+                    if (!await SendClientArgsToHostInstanceAsync(hostInstanceId, launchArguments[i], hostProcess))
+                        break;
+                    queued++;
+                }
+
+                List<string> queuedUsernames = launchArguments
+                    .Take(queued)
+                    .Select(arguments => arguments[1])
+                    .ToList();
+                List<string> undeliveredUsernames = launchArguments
+                    .Skip(queued)
+                    .Select(arguments => arguments[1])
+                    .ToList();
+                // Provisional until the end: undelivered accounts only count as failed if the window is still open.
+                int failed = unavailable + undeliveredUsernames.Count;
+
+                Dispatcher.UIThread.Post(() =>
+                {
+                    foreach (string username in queuedUsernames)
+                        _quickLaunchPending.Add(username);
+                    UpdateQuickLaunchStatuses();
+                });
+
+                bool hostClosed = false;
+                int loggedIn = 0;
+                HashSet<string> runningAccounts = new(StringComparer.OrdinalIgnoreCase);
+                for (int elapsedSeconds = 0; elapsedSeconds < 180 && loggedIn < queuedUsernames.Count; elapsedSeconds++)
+                {
+                    // Its accounts can't log in once the new window is gone, so stop waiting for them.
+                    if (HasProcessExited(hostProcess))
+                    {
+                        hostClosed = true;
+                        break;
+                    }
+
+                    runningAccounts = GetRunningAccountUsernames();
+                    loggedIn = queuedUsernames.Count(runningAccounts.Contains);
+                    int currentLoggedIn = loggedIn;
+                    int currentStarting = queuedUsernames.Count - currentLoggedIn;
+
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (_isClosing)
+                            return;
+
+                        UpdateQuickLaunchStatuses();
+                        AccountQuickLaunchProgressBar.Value = queuedUsernames.Count == 0
+                            ? 100
+                            : currentLoggedIn * 100d / queuedUsernames.Count;
+                        AccountQuickLaunchProgressText.Text = currentStarting == 0
+                            ? $"New window ready · {currentLoggedIn} accounts running · {alreadyRunning} already running · {failed} unavailable/failed"
+                            : $"New window opened · {queued} queued · {currentLoggedIn}/{queuedUsernames.Count} logged in · {currentStarting} still starting · {alreadyRunning} already running · {failed} unavailable/failed";
+                    });
+
+                    if (currentStarting > 0)
+                        await Task.Delay(1000);
+                }
+
+                // The window can also exit after the last scan (e.g. right after every account logged in), so check
+                // once more and report from a fresh scan rather than a snapshot taken while it was still open.
+                if (hostClosed || HasProcessExited(hostProcess))
+                {
+                    hostClosed = true;
+                    runningAccounts = GetRunningAccountUsernames();
+                    loggedIn = queuedUsernames.Count(runningAccounts.Contains);
+                    failed = unavailable;
+                }
+
+                List<string> timedOutUsernames = queuedUsernames
+                    .Where(username => !runningAccounts.Contains(username))
+                    .ToList();
+                int notStarted = timedOutUsernames.Count + (hostClosed ? undeliveredUsernames.Count : 0);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    foreach (string username in queuedUsernames)
+                        CompleteQuickLaunchPending(username, runningAccounts.Contains(username));
+                    // Decided once, here: a closed window's accounts are "Not running", not failed.
+                    foreach (string username in timedOutUsernames.Concat(undeliveredUsernames))
+                    {
+                        if (hostClosed)
+                            _quickLaunchFailed.Remove(username);
+                        else
+                            _quickLaunchFailed.Add(username);
+                    }
+
+                    UpdateQuickLaunchStatuses();
+                    AccountQuickLaunchProgressBar.Value = 100;
+                    AccountQuickLaunchProgressText.Text = hostClosed
+                        ? $"New window closed · {loggedIn} running · {notStarted} not started · {alreadyRunning} already running · {failed} unavailable/undelivered"
+                        : timedOutUsernames.Count > 0
+                        ? $"New window launch timed out · {loggedIn} running · {timedOutUsernames.Count} timed out · {alreadyRunning} already running · {failed} unavailable/undelivered"
+                        : $"New window ready · {loggedIn} accounts running · {alreadyRunning} already running · {failed} unavailable/undelivered";
+                    AccountQuickLaunchRetryButton.IsVisible = _quickLaunchFailed.Count > 0;
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Failed to open a separate Bonxie window: {ex}");
+            foreach (string username in accounts)
+                _quickLaunchFailed.Add(username);
+            AccountQuickLaunchProgressPanel.IsVisible = true;
+            AccountQuickLaunchProgressBar.Value = 100;
+            AccountQuickLaunchProgressText.Text = "Could not open a separate Bonxie window. All requested accounts failed.";
+            AccountQuickLaunchRetryButton.IsVisible = _quickLaunchFailed.Count > 0;
+        }
+    }
+
+    private static async Task<bool> SendClientArgsToHostInstanceAsync(string hostInstanceId, string[] clientArgs, Process? hostProcess = null)
+    {
+        string pipeName = $"BonxieTabHostPipe-{hostInstanceId}";
+        string payload = $"LAUNCH|{JsonSerializer.Serialize(clientArgs)}";
+
+        for (int attempt = 0; attempt < 30; attempt++)
+        {
+            // No point retrying a pipe whose window has exited.
+            if (hostProcess is not null && HasProcessExited(hostProcess))
+                return false;
+
+            try
+            {
+                using NamedPipeClientStream pipeClient = new(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                await pipeClient.ConnectAsync(500);
+                using StreamWriter writer = new(pipeClient, System.Text.Encoding.UTF8, 1024, leaveOpen: true);
+                await writer.WriteLineAsync(payload);
+                await writer.FlushAsync();
+
+                using StreamReader reader = new(pipeClient, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
+                string? acknowledgement = await reader.ReadLineAsync();
+                return string.Equals(acknowledgement, "ACK", StringComparison.Ordinal);
+            }
+            catch (TimeoutException)
+            {
+                await Task.Delay(200);
+            }
+            catch (IOException)
+            {
+                await Task.Delay(200);
+            }
+        }
+
+        return false;
+    }
+
+    private void AccountQuickLaunchRetry_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_quickLaunchFailed.Count > 0)
+            LaunchAccountBatch(_quickLaunchFailed.ToArray());
+    }
+
+    private void LaunchAccountBatch(IEnumerable<string> usernames)
+    {
+        List<string> accounts = usernames
+            .Where(username => !string.IsNullOrWhiteSpace(username))
+            .Select(username => username.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (accounts.Count == 0)
+            return;
+
+        try
+        {
+            ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+            settings.ReloadSettings();
+            Dictionary<string, AccountData>? savedAccounts = settings.Get<Dictionary<string, AccountData>>("ManagedAccounts");
+
+            // Retry applies only to failures from this batch.
+            _quickLaunchFailed.Clear();
+
+            int batchId = ++_quickLaunchBatchId;
+            _quickLaunchBatchTotal = accounts.Count;
+            _quickLaunchBatchCompleted = 0;
+            _quickLaunchBatchAlreadyOpen = 0;
+            _quickLaunchBatchFailed = 0;
+
+            foreach (string username in accounts)
+            {
+                Action<bool> batchCompletion = success =>
+                {
+                    if (batchId != _quickLaunchBatchId)
+                    {
+                        UpdateQuickLaunchStatuses();
+                        return;
+                    }
+
+                    _quickLaunchBatchCompleted++;
+                    if (success)
+                        _quickLaunchFailed.Remove(username);
+                    else
+                    {
+                        _quickLaunchFailed.Add(username);
+                        _quickLaunchBatchFailed++;
+                    }
+
+                    UpdateQuickLaunchStatuses();
+                    UpdateQuickLaunchBatchProgress();
+                };
+
+                // Join an in-flight request before checking running state. The original
+                // launch owns completion, so this batch must wait for its final result.
+                if (_quickLaunchPending.Contains(username))
+                {
+                    if (!_quickLaunchPendingCallbacks.TryGetValue(username, out List<Action<bool>>? callbacks))
+                    {
+                        callbacks = [];
+                        _quickLaunchPendingCallbacks[username] = callbacks;
+                    }
+                    callbacks.Add(batchCompletion);
+                    continue;
+                }
+
+                TabItem? existingTab = FindExistingAccountTab(username);
+                if (existingTab != null)
+                {
+                    FocusAccountTab(existingTab);
+                    _quickLaunchBatchAlreadyOpen++;
+                    _quickLaunchBatchCompleted++;
+                    continue;
+                }
+
+                if (savedAccounts == null || !savedAccounts.ContainsKey(username))
+                {
+                    _quickLaunchFailed.Add(username);
+                    _quickLaunchBatchFailed++;
+                    _quickLaunchBatchCompleted++;
+                    continue;
+                }
+
+                if (IsExternalAccountRunning(username))
+                {
+                    _quickLaunchBatchAlreadyOpen++;
+                    _quickLaunchBatchCompleted++;
+                    continue;
+                }
+
+                _quickLaunchPending.Add(username);
+                _quickLaunchPendingCallbacks[username] = [batchCompletion];
+                LaunchAccount(username, onCompleted: success => CompleteQuickLaunchPending(username, success));
+            }
+            UpdateQuickLaunchStatuses();
+            UpdateQuickLaunchBatchProgress();
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Quick Account Launch batch failed: {ex}");
+            foreach (string username in accounts)
+                _quickLaunchFailed.Add(username);
+            _quickLaunchBatchTotal = accounts.Count;
+            _quickLaunchBatchCompleted = accounts.Count;
+            _quickLaunchBatchAlreadyOpen = 0;
+            _quickLaunchBatchFailed = accounts.Count;
+            UpdateQuickLaunchBatchProgress();
+        }
+    }
+
+    private static bool HasProcessExited(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    private void CompleteQuickLaunchPending(string username, bool success)
+    {
+        _quickLaunchPending.Remove(username);
+        if (_quickLaunchPendingCallbacks.Remove(username, out List<Action<bool>>? callbacks))
+        {
+            foreach (Action<bool> callback in callbacks)
+                callback(success);
+        }
+
+        UpdateQuickLaunchStatuses();
+    }
+
+    private void UpdateQuickLaunchBatchProgress()
+    {
+        if (_quickLaunchBatchTotal <= 0)
+        {
+            AccountQuickLaunchProgressPanel.IsVisible = false;
+            return;
+        }
+
+        AccountQuickLaunchProgressPanel.IsVisible = true;
+        int completed = Math.Min(_quickLaunchBatchCompleted, _quickLaunchBatchTotal);
+        AccountQuickLaunchProgressBar.Value = completed * 100d / _quickLaunchBatchTotal;
+        AccountQuickLaunchProgressText.Text = completed >= _quickLaunchBatchTotal
+            ? $"Finished: {_quickLaunchBatchTotal - _quickLaunchBatchAlreadyOpen - _quickLaunchBatchFailed} launched · {_quickLaunchBatchAlreadyOpen} already running · {_quickLaunchBatchFailed} failed"
+            : $"Launching: {completed}/{_quickLaunchBatchTotal} complete · {_quickLaunchBatchAlreadyOpen} already running · {_quickLaunchBatchFailed} failed";
+        AccountQuickLaunchRetryButton.IsVisible = _quickLaunchBatchFailed > 0;
+    }
+
+    private void OpenQuickLaunch()
+    {
+        if (_isClosing)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_isClosing)
+                return;
+
+            // A global hotkey can be triggered while an embedded game window owns
+            // keyboard focus. Activate the host before opening and focusing the popup.
+            if (WindowState == WindowState.Minimized)
+                WindowState = WindowState.Normal;
+
+            Show();
+            Activate();
+            Topmost = true;
+            Topmost = false;
+            Focus();
+
+            RefreshQuickLaunchAccounts();
+            AccountLaunchToggle.IsChecked = true;
+
+            // Popup content is created after IsOpen changes, so focus it on the
+            // following dispatcher pass rather than leaving focus in the game client.
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (_isClosing || !AccountQuickLaunchPopup.IsOpen)
+                    return;
+
+                Activate();
+                Topmost = true;
+                Topmost = false;
+                AccountQuickLaunchSearch.Focus();
+            }, DispatcherPriority.Input);
+        }, DispatcherPriority.Input);
+    }
+
+    private void AccountQuickLaunchSearch_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            if (_quickLaunchSelection.Count > 0)
+                LaunchSelectedQuickAccounts();
+
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            CloseQuickLaunchPopup();
+            e.Handled = true;
+        }
+    }
+
+    private void CloseQuickLaunchPopup()
+    {
+        AccountQuickLaunchPopup.IsOpen = false;
+        AccountLaunchToggle.IsChecked = false;
+        AccountLaunchToggle.Focus();
+    }
+
+    private void FocusAccountTab(TabItem tab)
+    {
+        InstancesTabControl.SelectedItem = tab;
+        ScrollTabIntoView(tab);
+    }
+
+    private TabItem? FindExistingAccountTab(string username)
+    {
+        foreach (KeyValuePair<TabItem, TabInfo> tabEntry in _tabs)
+        {
+            TabInfo tabInfo = tabEntry.Value;
+            if (tabInfo.Process == null || tabInfo.Process.HasExited)
+                continue;
+
+            // A tab title or launch argument is not proof of an authenticated account.
+            string? loggedInUsername = GetProcessLoggedInUsername(tabInfo);
+            if (string.Equals(loggedInUsername, username, StringComparison.OrdinalIgnoreCase))
+            {
+                tabInfo.Username = loggedInUsername.Trim();
+                return tabEntry.Key;
+            }
+        }
+
+        return null;
+    }
+
+    private string GetQuickLaunchAccountStatus(string username)
+    {
+        foreach (TabInfo tabInfo in _tabs.Values)
+        {
+            if (tabInfo.Process == null || tabInfo.Process.HasExited)
+                continue;
+
+            string? loggedInUsername = GetProcessLoggedInUsername(tabInfo);
+            if (string.Equals(loggedInUsername, username, StringComparison.OrdinalIgnoreCase))
+                return "Running";
+            if (tabInfo.LaunchCompletion != null
+                && string.Equals(tabInfo.Username, username, StringComparison.OrdinalIgnoreCase))
+                return "Launching";
+        }
+
+        if (IsExternalAccountRunning(username))
+            return "Running";
+
+        if (_quickLaunchPending.Contains(username))
+            return "Launching";
+        if (_quickLaunchFailed.Contains(username))
+            return "Failed";
+        return "Not running";
+    }
+
+    /// <summary>
+    /// Finds a logged-in account running in another Bonxie host by checking
+    /// the per-process username files shared through the temporary tabs directory.
+    /// </summary>
+    private static bool IsExternalAccountRunning(string username)
+    {
+        return GetRunningAccountUsernames().Contains(username);
+    }
+
+    /// <summary>
+    /// Reads the shared per-process username records for every active game client.
+    /// These records allow Quick Launch to detect accounts hosted by other windows.
+    /// </summary>
+    private static HashSet<string> GetRunningAccountUsernames()
+    {
+        HashSet<string> runningAccounts = new(StringComparer.OrdinalIgnoreCase);
+        string directory = Path.Combine(Path.GetTempPath(), "BonxieTabs");
+        if (!Directory.Exists(directory))
+            return runningAccounts;
+
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(directory, "*.txt"))
+            {
+                string fileName = Path.GetFileNameWithoutExtension(file);
+                if (!int.TryParse(fileName, out int processId) || processId == Environment.ProcessId)
+                    continue;
+
+                try
+                {
+                    using Process process = Process.GetProcessById(processId);
+                    if (process.HasExited
+                        || !string.Equals(process.ProcessName, Process.GetCurrentProcess().ProcessName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    // A stale username file can outlive its process and be mistaken for a
+                    // new process after Windows reuses the PID.
+                    DateTime processStartUtc = process.StartTime.ToUniversalTime();
+                    if (File.GetLastWriteTimeUtc(file) < processStartUtc)
+                        continue;
+
+                    string locationFile = Path.Combine(directory, $"{processId}.location.json");
+                    if (File.Exists(locationFile))
+                    {
+                        using JsonDocument location = JsonDocument.Parse(File.ReadAllText(locationFile));
+                        if (location.RootElement.TryGetProperty("LoggedIn", out JsonElement loggedIn)
+                            && loggedIn.ValueKind == JsonValueKind.False)
+                            continue;
+                    }
+
+                    string loggedInUsername = File.ReadAllText(file).Trim();
+                    if (!string.IsNullOrWhiteSpace(loggedInUsername))
+                        runningAccounts.Add(loggedInUsername);
+                }
+                catch (ArgumentException)
+                {
+                    // The process exited after its username file was enumerated.
+                }
+                catch (IOException)
+                {
+                    // The game client may be updating its username file.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Ignore files that cannot be read.
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    // The process may exit or deny access while its identity is checked.
+                }
+                catch (JsonException)
+                {
+                    // Ignore malformed location records.
+                }
+            }
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // The shared directory may be cleaned up while scanning it.
+        }
+        catch (IOException)
+        {
+            // Ignore transient directory access failures.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // The shared directory is not accessible.
+        }
+
+        return runningAccounts;
+    }
+
+    private void UpdateQuickLaunchStatuses()
+    {
+        foreach (KeyValuePair<string, (Border Bubble, TextBlock Text)> entry in _quickLaunchStatusBubbles)
+            SetQuickLaunchStatusBubble(entry.Value.Bubble, entry.Value.Text, GetQuickLaunchAccountStatus(entry.Key));
+    }
+
+    private static void SetQuickLaunchStatusBubble(Border bubble, TextBlock text, string status)
+    {
+        (string Background, string Foreground) colors = status switch
+        {
+            "Running" => ("#174B35", "#8DE2B5"),
+            "Launching" => ("#493A18", "#F5D58A"),
+            "Failed" => ("#542A2A", "#FFAAAA"),
+            _ => ("#343943", "#C4CAD4")
+        };
+
+        text.Text = status;
+        text.Foreground = new SolidColorBrush(Color.Parse(colors.Foreground));
+        bubble.Background = new SolidColorBrush(Color.Parse(colors.Background));
+    }
+
+    private void RefreshQuickLaunchAccounts()
+    {
+        try
+        {
+            ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+            settings.ReloadSettings();
+            Dictionary<string, AccountData>? savedAccounts = settings.Get<Dictionary<string, AccountData>>("ManagedAccounts");
+
+            _quickLaunchAccounts.Clear();
+            _quickLaunchGroups.Clear();
+            AccountQuickLaunchGroupCombo.Items.Clear();
+
+            List<GroupData> savedGroups = settings.Get<List<GroupData>>("AccountGroups") ?? new List<GroupData>();
+            foreach (GroupData group in savedGroups)
+            {
+                if (string.IsNullOrWhiteSpace(group.Name) || group.Accounts == null)
+                    continue;
+
+                _quickLaunchGroups.Add(group);
+                AccountQuickLaunchGroupCombo.Items.Add(new ComboBoxItem { Content = group.Name, Tag = group.Name });
+            }
+
+            AccountQuickLaunchGroupCombo.SelectedIndex = _quickLaunchGroups.Count > 0 ? 0 : -1;
+            AccountQuickLaunchGroupButton.IsEnabled = _quickLaunchGroups.Count > 0;
+            AccountQuickLaunchGroupNewWindowButton.IsEnabled = _quickLaunchGroups.Count > 0;
+
+            if (savedAccounts != null)
+            {
+                foreach (KeyValuePair<string, AccountData> account in savedAccounts)
+                {
+                    if (string.IsNullOrWhiteSpace(account.Key))
+                        continue;
+
+                    string displayName = string.IsNullOrWhiteSpace(account.Value?.DisplayName)
+                        ? account.Key
+                        : account.Value.DisplayName;
+                    _quickLaunchAccounts.Add((account.Key, displayName));
+                }
+            }
+
+            _quickLaunchSelection.RemoveWhere(username =>
+                !_quickLaunchAccounts.Any(account => string.Equals(account.Username, username, StringComparison.OrdinalIgnoreCase)));
+
+            AccountQuickLaunchCountText.Text = _quickLaunchAccounts.Count == 1
+                ? "1 saved Manager account"
+                : $"{_quickLaunchAccounts.Count} saved Manager accounts";
+            FilterQuickLaunchAccounts();
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Failed to load Manager accounts for Quick Account Launch: {ex}");
+            _quickLaunchAccounts.Clear();
+            _quickLaunchSelection.Clear();
+            AccountQuickLaunchCountText.Text = "Manager accounts unavailable";
+            AccountQuickLaunchRows.Children.Clear();
+            AccountQuickLaunchRows.IsVisible = false;
+            AccountQuickLaunchEmptyText.Text = "Could not load Manager accounts.";
+            AccountQuickLaunchEmptyText.IsVisible = true;
+            UpdateQuickLaunchSelectionSummary();
+        }
+    }
+
+    private void FilterQuickLaunchAccounts()
+    {
+        string search = AccountQuickLaunchSearch.Text?.Trim() ?? string.Empty;
+        List<(string Username, string DisplayName)> visibleAccounts = _quickLaunchAccounts
+            .Where(account => string.IsNullOrWhiteSpace(search)
+                || account.Username.Contains(search, StringComparison.OrdinalIgnoreCase)
+                || account.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        AccountQuickLaunchRows.Children.Clear();
+        _quickLaunchStatusBubbles.Clear();
+        foreach ((string Username, string DisplayName) account in visibleAccounts)
+        {
+            StackPanel accountNameContent = new()
+            {
+                Orientation = Orientation.Vertical,
+                Spacing = 1,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            TextBlock displayName = new()
+            {
+                Text = account.DisplayName,
+                FontSize = 12,
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            displayName[!TextBlock.ForegroundProperty] =
+                new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaTextBrush");
+            accountNameContent.Children.Add(displayName);
+
+            if (!string.Equals(account.DisplayName, account.Username, StringComparison.OrdinalIgnoreCase))
+            {
+                TextBlock username = new()
+                {
+                    Text = account.Username,
+                    FontSize = 10,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                username[!TextBlock.ForegroundProperty] =
+                    new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaMutedTextBrush");
+                accountNameContent.Children.Add(username);
+            }
+
+            StackPanel accountContent = new()
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            accountContent.Children.Add(accountNameContent);
+
+            TextBlock statusText = new()
+            {
+                FontSize = 9,
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Border statusBubble = new()
+            {
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(6, 2),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = statusText
+            };
+            SetQuickLaunchStatusBubble(statusBubble, statusText, GetQuickLaunchAccountStatus(account.Username));
+            _quickLaunchStatusBubbles[account.Username] = (statusBubble, statusText);
+            accountContent.Children.Add(statusBubble);
+
+            CheckBox checkBox = new()
+            {
+                Content = accountContent,
+                IsChecked = _quickLaunchSelection.Contains(account.Username),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Center,
+                Padding = new Thickness(6, 3)
+            };
+            checkBox.Click += (sender, args) =>
+            {
+                if (checkBox.IsChecked == true)
+                    _quickLaunchSelection.Add(account.Username);
+                else
+                    _quickLaunchSelection.Remove(account.Username);
+
+                UpdateQuickLaunchSelectionSummary();
+            };
+            checkBox.KeyDown += (sender, args) =>
+            {
+                if (args.Key == Key.Enter)
+                {
+                    LaunchSelectedQuickAccounts();
+                    args.Handled = true;
+                }
+                else if (args.Key == Key.Escape)
+                {
+                    CloseQuickLaunchPopup();
+                    args.Handled = true;
+                }
+            };
+
+            AccountQuickLaunchRows.Children.Add(checkBox);
+        }
+
+        AccountQuickLaunchRows.IsVisible = visibleAccounts.Count > 0;
+        AccountQuickLaunchEmptyText.IsVisible = visibleAccounts.Count == 0;
+        AccountQuickLaunchEmptyText.Text = _quickLaunchAccounts.Count == 0
+            ? "No Manager accounts saved yet."
+            : "No accounts match your search.";
+        UpdateQuickLaunchSelectionSummary();
+        UpdateQuickLaunchStatuses();
+    }
+
+    private void UpdateQuickLaunchSelectionSummary()
+    {
+        int selectedCount = _quickLaunchSelection.Count;
+        AccountQuickLaunchSelectionText.Text = $"{selectedCount} selected";
+        AccountQuickLaunchLaunchText.Text = selectedCount == 0
+            ? "Launch Selected"
+            : $"Launch {selectedCount} {(selectedCount == 1 ? "Account" : "Accounts")}";
+        AccountQuickLaunchLaunchButton.IsEnabled = selectedCount > 0;
+        AccountQuickLaunchNewWindowButton.IsEnabled = selectedCount > 0;
+    }
+
     private void ScrollTabsLeftButton_Click(object? sender, RoutedEventArgs e)
     {
         if (TabScrollViewer == null) return;
@@ -1292,11 +2447,14 @@ public partial class TabbedHostWindow : Window
         }
 
         if (optionId != -1)
-        {
-            foreach (var info in _tabs.Values)
-                if (info.ChildHwnd != IntPtr.Zero)
-                    PostMessage(info.ChildHwnd, WM_SKUA_SET_OPTION, new IntPtr(optionId), new IntPtr(val ? 1 : 0));
-        }
+            BroadcastOption(optionId, val);
+    }
+
+    private void BroadcastOption(int optionId, bool val)
+    {
+        foreach (var info in _tabs.Values)
+            if (info.ChildHwnd != IntPtr.Zero)
+                PostMessage(info.ChildHwnd, WM_SKUA_SET_OPTION, new IntPtr(optionId), new IntPtr(val ? 1 : 0));
     }
 
     private async void MenuItem_StartAllScripts_Click(object? sender, RoutedEventArgs e)
@@ -2539,6 +3697,10 @@ public partial class TabbedHostWindow : Window
                 _needsReposition = false;
                 Dispatcher.UIThread.Post(DoReposition, DispatcherPriority.Render);
             }
+
+            // ShowWindow(SW_SHOW) above may lift a game window over an open host dialog.
+            if (IsHostModalOpen)
+                KeepGameWindowsBelowHostWindows();
         }
     }
 
@@ -2577,6 +3739,7 @@ public partial class TabbedHostWindow : Window
 
         if (_tabs.TryGetValue(tab, out TabInfo? info))
         {
+            CompleteTabLaunch(info, false);
             _tabs.Remove(tab);
             Task.Run(() =>
             {
@@ -2589,6 +3752,8 @@ public partial class TabbedHostWindow : Window
                     if (info.Process != null)
                     {
                         try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.txt")); } catch { }
+                        try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.location.json")); } catch { }
+                        try { File.Delete(Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.remote.txt")); } catch { }
                     }
                 }
                 catch { }
@@ -2644,7 +3809,7 @@ public partial class TabbedHostWindow : Window
         AddNewInstance(ParseRawCommandLine(rawArgs));
     }
 
-    public void AddNewInstance(string[]? clientArgs = null)
+    public bool AddNewInstance(string[]? clientArgs = null, Action<bool>? launchCompletion = null)
     {
         clientArgs ??= Array.Empty<string>();
 
@@ -2668,13 +3833,34 @@ public partial class TabbedHostWindow : Window
         }
 
         string tabName = "User " + availableId;
+        string? accountUsername = null;
         for (int i = 0; i < clientArgs.Length; i++)
         {
             if ((clientArgs[i] == "-u" || clientArgs[i] == "--user") && i + 1 < clientArgs.Length)
             {
                 if (!string.IsNullOrWhiteSpace(clientArgs[i + 1]))
-                    tabName = clientArgs[i + 1];
+                {
+                    accountUsername = clientArgs[i + 1].Trim();
+                    tabName = accountUsername;
+                }
                 break;
+            }
+        }
+
+        FileStream? accountReservation = null;
+        if (!string.IsNullOrWhiteSpace(accountUsername))
+        {
+            if (FindExistingAccountTab(accountUsername) is not null || IsExternalAccountRunning(accountUsername))
+            {
+                launchCompletion?.Invoke(false);
+                return false;
+            }
+
+            accountReservation = TryAcquireAccountReservation(accountUsername);
+            if (accountReservation is null)
+            {
+                launchCompletion?.Invoke(false);
+                return false;
             }
         }
 
@@ -2748,7 +3934,12 @@ public partial class TabbedHostWindow : Window
         closeBtn.PointerEntered += (s, ev) => { closeTxt.Foreground = Brushes.White; closeBtn.Background = new SolidColorBrush(Color.Parse("#EF4444")); };
         closeBtn.PointerExited += (s, ev) => { closeTxt[!TextBlock.ForegroundProperty] = new global::Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SkuaMutedTextBrush"); closeBtn.Background = Brushes.Transparent; };
 
-        TabInfo info = new TabInfo();
+        TabInfo info = new()
+        {
+            Username = accountUsername,
+            LaunchCompletion = launchCompletion,
+            AccountReservation = accountReservation
+        };
 
         Action closeEditMode = () =>
         {
@@ -2817,13 +4008,25 @@ public partial class TabbedHostWindow : Window
         {
             if (_isClosing || !_tabs.ContainsKey(newTab))
             {
+                info.AccountReservation?.Dispose();
+                info.AccountReservation = null;
+                CompleteTabLaunch(info, false);
                 _isSpawning = false;
                 ProcessNextSpawn();
                 return;
             }
 
             Process p = new Process();
-            p.StartInfo.FileName = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+            string exePath = Process.GetCurrentProcess().MainModule?.FileName ?? "";
+            if (exePath.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase) || exePath.EndsWith("dotnet", StringComparison.OrdinalIgnoreCase))
+            {
+                p.StartInfo.FileName = exePath;
+                p.StartInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Bonxie.dll"));
+            }
+            else
+            {
+                p.StartInfo.FileName = exePath;
+            }
             p.StartInfo.ArgumentList.Add("--embed");
             p.StartInfo.ArgumentList.Add(_hostHwnd.ToInt64().ToString());
             p.StartInfo.ArgumentList.Add("--host-pid");
@@ -2845,10 +4048,12 @@ public partial class TabbedHostWindow : Window
             {
                 Dispatcher.UIThread.Post(() =>
                 {
+                    CompleteTabLaunch(info, false);
+                    info.AccountReservation?.Dispose();
+                    info.AccountReservation = null;
                     if (!_isClosing)
-                    {
                         CloseTab(newTab);
-                    }
+                    UpdateQuickLaunchStatuses();
                 });
             };
 
@@ -2859,6 +4064,9 @@ public partial class TabbedHostWindow : Window
             catch (Exception ex)
             {
                 p.Dispose();
+                CompleteTabLaunch(info, false);
+                info.AccountReservation?.Dispose();
+                info.AccountReservation = null;
                 _isSpawning = false;
                 Trace.WriteLine($"Bonxie failed to start child process for tab '{tabName}': {ex}");
                 Dispatcher.UIThread.Post(() =>
@@ -2871,6 +4079,28 @@ public partial class TabbedHostWindow : Window
             }
 
             info.Process = p;
+
+            // A client that never reports a logged-in identity must not hold the account
+            // reservation forever. Terminate the stalled child so a retry can acquire it.
+            if (!string.IsNullOrWhiteSpace(accountUsername))
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(3));
+                    if (p.HasExited || !string.IsNullOrWhiteSpace(GetProcessLoggedInUsername(info)))
+                        return;
+
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        if (p.HasExited || !string.IsNullOrWhiteSpace(GetProcessLoggedInUsername(info)))
+                            return;
+
+                        CompleteTabLaunch(info, false);
+                        try { p.Kill(entireProcessTree: true); } catch { }
+                    });
+                });
+            }
+
             try
             {
                 EnsureChildJobObject();
@@ -2979,7 +4209,7 @@ public partial class TabbedHostWindow : Window
         newTab.ContextMenu = ctx;
 
         Point startPoint = new Point();
-        PointerPressedEventArgs? dragPressedArgs = null;
+        PointerPressedEventArgs? dragStartEvent = null;
         headerPanel.PointerPressed += (s, ev) =>
         {
             var prop = ev.GetCurrentPoint(headerPanel).Properties;
@@ -2993,7 +4223,7 @@ public partial class TabbedHostWindow : Window
                 return;
 
             startPoint = ev.GetPosition(null);
-            dragPressedArgs = ev;
+            dragStartEvent = ev;
             InstancesTabControl.SelectedItem = newTab;
 
             if (_isGridViewEnabled)
@@ -3020,30 +4250,29 @@ public partial class TabbedHostWindow : Window
             }
         };
 
-        var tabDragFormat = DataFormat.CreateInProcessFormat<TabItem>("TabItem");
+        headerPanel.PointerReleased += (s, ev) => dragStartEvent = null;
+
         headerPanel.PointerMoved += async (s, ev) =>
         {
             if (editTitle.IsVisible) return;
 
-            if (dragPressedArgs != null && ev.GetCurrentPoint(null).Properties.IsLeftButtonPressed)
+            if (ev.GetCurrentPoint(null).Properties.IsLeftButtonPressed)
             {
                 Point mousePos = ev.GetPosition(null);
                 Vector diff = startPoint - mousePos;
-                if (Math.Abs(diff.X) > 4 || Math.Abs(diff.Y) > 4)
+                if ((Math.Abs(diff.X) > 4 || Math.Abs(diff.Y) > 4) && dragStartEvent is { } dragStart)
                 {
-                    var pressed = dragPressedArgs;
-                    dragPressedArgs = null;
-                    var dragData = new DataTransfer();
-                    dragData.Add(DataTransferItem.Create(tabDragFormat, newTab));
-                    await DragDrop.DoDragDropAsync(pressed, dragData, DragDropEffects.Move);
+                    dragStartEvent = null;
+                    DataTransfer dragData = new();
+                    dragData.Add(DataTransferItem.Create(TabItemDataFormat, newTab));
+                    await DragDrop.DoDragDropAsync(dragStart, dragData, DragDropEffects.Move);
                 }
             }
         };
 
         newTab.AddHandler(DragDrop.DropEvent, (s, ev) =>
         {
-            TabItem? droppedTab = ev.DataTransfer.TryGetValue(tabDragFormat);
-            if (droppedTab != null && droppedTab != newTab)
+            if (ev.DataTransfer.TryGetValue(TabItemDataFormat) is TabItem droppedTab && droppedTab != newTab)
             {
                 int targetIndex = InstancesTabControl.Items.IndexOf(newTab);
                 InstancesTabControl.Items.Remove(droppedTab);
@@ -3053,40 +4282,67 @@ public partial class TabbedHostWindow : Window
         });
 
         #endregion Tab Interactions
+        return true;
     }
 
     #region Group Assignment Helper
 
+    private string? GetProcessLoggedInUsername(TabInfo? info)
+    {
+        if (info?.Process == null || info.Process.HasExited)
+            return null;
+
+        try
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "BonxieTabs");
+            string file = Path.Combine(directory, $"{info.Process.Id}.txt");
+            if (!File.Exists(file)
+                || File.GetLastWriteTimeUtc(file) < info.Process.StartTime.ToUniversalTime())
+                return null;
+
+            string locationFile = Path.Combine(directory, $"{info.Process.Id}.location.json");
+            if (File.Exists(locationFile))
+            {
+                using JsonDocument location = JsonDocument.Parse(File.ReadAllText(locationFile));
+                if (location.RootElement.TryGetProperty("LoggedIn", out JsonElement loggedIn)
+                    && loggedIn.ValueKind == JsonValueKind.False)
+                    return null;
+            }
+
+            string username = File.ReadAllText(file).Trim();
+            if (!string.IsNullOrWhiteSpace(username)
+                && !username.StartsWith("User ", StringComparison.OrdinalIgnoreCase)
+                && !username.StartsWith("Skua ", StringComparison.OrdinalIgnoreCase))
+                return username;
+        }
+        catch { }
+
+        return null;
+    }
+
     private string? GetTabLoggedInUsername(TabItem tab, TabInfo? info, string currentTitle)
     {
-        if (info?.Process != null && !info.Process.HasExited)
-        {
-            try
-            {
-                string file = Path.Combine(Path.GetTempPath(), "BonxieTabs", $"{info.Process.Id}.txt");
-                if (File.Exists(file))
-                {
-                    string name = File.ReadAllText(file).Trim();
-                    if (!string.IsNullOrWhiteSpace(name) &&
-                        !name.StartsWith("User ", StringComparison.OrdinalIgnoreCase) &&
-                        !name.StartsWith("Skua ", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return name;
-                    }
-                }
-            }
-            catch { }
-        }
+        string? processUsername = GetProcessLoggedInUsername(info);
+        if (!string.IsNullOrWhiteSpace(processUsername))
+            return processUsername;
 
         string title = currentTitle?.Trim() ?? "";
         if (!string.IsNullOrWhiteSpace(title) &&
             !title.StartsWith("User ", StringComparison.OrdinalIgnoreCase) &&
             !title.StartsWith("Skua ", StringComparison.OrdinalIgnoreCase))
-        {
             return title;
-        }
 
         return null;
+    }
+
+    private static void CompleteTabLaunch(TabInfo info, bool success)
+    {
+        Action<bool>? completion = info.LaunchCompletion;
+        if (completion == null)
+            return;
+
+        info.LaunchCompletion = null;
+        completion(success);
     }
 
     private void PopulateAddToGroupMenu(MenuItem parentItem, TabItem tab, TabInfo? info, string currentTitle)
@@ -3210,6 +4466,393 @@ public partial class TabbedHostWindow : Window
     }
 
     #endregion Group Assignment Helper
+
+    #region Remote Control Gateway Helpers
+
+    public int GetActiveChildPid()
+    {
+        try
+        {
+            if (!Dispatcher.UIThread.CheckAccess())
+            {
+                return Dispatcher.UIThread.Invoke(() => GetActiveChildPid());
+            }
+
+            string dir = Path.Combine(Path.GetTempPath(), "BonxieTabs");
+
+            bool IsTabAuthenticated(int pid)
+            {
+                try
+                {
+                    string userFile = Path.Combine(dir, $"{pid}.txt");
+                    if (File.Exists(userFile))
+                    {
+                        string u = File.ReadAllText(userFile).Trim();
+                        if (!string.IsNullOrWhiteSpace(u) && !u.StartsWith("User ") && !u.StartsWith("Skua "))
+                            return true;
+                    }
+                    string locFile = Path.Combine(dir, $"{pid}.location.json");
+                    if (File.Exists(locFile))
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(locFile));
+                        if (doc.RootElement.TryGetProperty("LoggedIn", out var li) && li.GetBoolean())
+                            return true;
+                    }
+                }
+                catch { }
+                return false;
+            }
+
+            // 1. If currently selected tab is alive and has an active login session, use it
+            if (InstancesTabControl.SelectedItem is TabItem selTab &&
+                _tabs.TryGetValue(selTab, out TabInfo? info) &&
+                info.Process != null && !info.Process.HasExited &&
+                IsTabAuthenticated(info.Process.Id))
+            {
+                return info.Process.Id;
+            }
+
+            // 2. Check all tabs for any that has an active logged-in character
+            foreach (var tabInfo in _tabs.Values)
+            {
+                if (tabInfo.Process != null && !tabInfo.Process.HasExited && IsTabAuthenticated(tabInfo.Process.Id))
+                {
+                    return tabInfo.Process.Id;
+                }
+            }
+
+            // 3. Fallback to currently selected tab even if unauthenticated
+            if (InstancesTabControl.SelectedItem is TabItem selTab2 &&
+                _tabs.TryGetValue(selTab2, out TabInfo? info2) &&
+                info2.Process != null && !info2.Process.HasExited)
+            {
+                return info2.Process.Id;
+            }
+
+            // 4. Fallback to any alive tab
+            foreach (var tabInfo in _tabs.Values)
+            {
+                if (tabInfo.Process != null && !tabInfo.Process.HasExited)
+                    return tabInfo.Process.Id;
+            }
+        }
+        catch { }
+
+        return 0;
+    }
+
+    public void SelectTabByPid(int pid)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var kvp in _tabs)
+            {
+                if (kvp.Value?.Process != null && kvp.Value.Process.Id == pid)
+                {
+                    InstancesTabControl.SelectedItem = kvp.Key;
+                    break;
+                }
+            }
+        });
+    }
+
+    public void FocusTabByPid(int pid)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            SelectTabByPid(pid);
+            try
+            {
+                if (WindowState == WindowState.Minimized)
+                    WindowState = WindowState.Normal;
+                Show();
+                Activate();
+                Topmost = true;
+                Topmost = false;
+                Focus();
+            }
+            catch { }
+        });
+    }
+
+    public bool CloseTabByPid(int pid)
+    {
+        return Dispatcher.UIThread.Invoke(() =>
+        {
+            foreach (var kvp in _tabs)
+            {
+                if (kvp.Value?.Process != null && kvp.Value.Process.Id == pid)
+                {
+                    CloseTab(kvp.Key);
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    public void LaunchAccount(string username, string? password = null, string? server = null, Action<bool>? onCompleted = null)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (FindExistingAccountTab(username) is TabItem existingTab)
+            {
+                FocusAccountTab(existingTab);
+                onCompleted?.Invoke(true);
+                return;
+            }
+
+            ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+            settings.ReloadSettings();
+            Dictionary<string, AccountData>? accs = settings.Get<Dictionary<string, AccountData>>("ManagedAccounts");
+            string pass = password ?? string.Empty;
+            if (string.IsNullOrEmpty(pass) && accs != null && accs.TryGetValue(username, out var acc))
+            {
+                pass = acc.Password ?? string.Empty;
+            }
+            if (!string.IsNullOrEmpty(pass) && pass.StartsWith("enc:"))
+            {
+                try
+                {
+                    pass = Skua.Core.Utils.CryptoUtils.Decrypt(pass);
+                }
+                catch { }
+            }
+            string srv = !string.IsNullOrEmpty(server) ? server : (settings.Get("LastServer", "Twilly") ?? "Twilly");
+
+            string[] args = { "-u", username, "-p", pass, "-s", srv };
+            AddNewInstance(args, onCompleted);
+        });
+    }
+
+    public void LaunchGroup(string groupName)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
+            settings.ReloadSettings();
+            List<GroupData> groups = settings.Get<List<GroupData>>("AccountGroups") ?? new List<GroupData>();
+            GroupData? group = groups.FirstOrDefault(item =>
+                string.Equals(item.Name, groupName, StringComparison.OrdinalIgnoreCase));
+            if (group?.Accounts != null)
+                LaunchAccountBatch(group.Accounts);
+        });
+    }
+
+    public void StartAllScripts()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_START_SCRIPT, IntPtr.Zero, IntPtr.Zero);
+            }
+        });
+    }
+
+    public void StopAllScripts()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_STOP_SCRIPT, IntPtr.Zero, IntPtr.Zero);
+            }
+        });
+    }
+
+    public void HeadlessAll(bool enabled)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            // Forward option 2 (Headless) with value
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_SET_OPTION, new IntPtr(2), new IntPtr(enabled ? 1 : 0));
+            }
+        });
+    }
+
+    public void ReloginAll()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var info in _tabs.Values)
+            {
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, (uint)WM_SKUA_LOGIN, IntPtr.Zero, IntPtr.Zero);
+            }
+        });
+    }
+
+    public void BroadcastArmyScheduler(string playlistJson)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(playlistJson) && playlistJson.Trim().StartsWith("["))
+            {
+                var normalizedList = new List<ScriptSchedulerViewModel.SavedScriptItem>();
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(playlistJson);
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var el in doc.RootElement.EnumerateArray())
+                        {
+                            string sPath = string.Empty;
+                            string sName = string.Empty;
+                            if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                sPath = el.GetString() ?? string.Empty;
+                            }
+                            else if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
+                            {
+                                if (el.TryGetProperty("Path", out var pProp) || el.TryGetProperty("path", out pProp))
+                                    sPath = pProp.GetString() ?? string.Empty;
+                                if (el.TryGetProperty("Name", out var nProp) || el.TryGetProperty("name", out nProp))
+                                    sName = nProp.GetString() ?? string.Empty;
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(sPath))
+                            {
+                                if (string.IsNullOrWhiteSpace(sName))
+                                    sName = System.IO.Path.GetFileName(sPath);
+                                normalizedList.Add(new ScriptSchedulerViewModel.SavedScriptItem
+                                {
+                                    Path = sPath,
+                                    Name = sName,
+                                    Id = Guid.NewGuid()
+                                });
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "skua_global_playlist.json");
+                if (normalizedList.Count > 0)
+                {
+                    System.IO.File.WriteAllText(tempFile, System.Text.Json.JsonSerializer.Serialize(normalizedList));
+                }
+                else
+                {
+                    System.IO.File.WriteAllText(tempFile, playlistJson);
+                }
+            }
+            foreach (var info in _tabs.Values)
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, WM_SKUA_ARMY_SCHEDULER, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch { }
+    }
+
+    public void StopArmyScheduler()
+    {
+        try
+        {
+            foreach (var info in _tabs.Values)
+                if (info.ChildHwnd != IntPtr.Zero)
+                    PostMessage(info.ChildHwnd, WM_SKUA_ARMY_SCHEDULER_STOP, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch { }
+    }
+
+    public List<object> GetTabsInfoList()
+    {
+        try
+        {
+            if (!Dispatcher.UIThread.CheckAccess())
+            {
+                return Dispatcher.UIThread.Invoke(() => GetTabsInfoList());
+            }
+
+            var list = new List<object>();
+            int activePid = GetActiveChildPid();
+            string dir = Path.Combine(Path.GetTempPath(), "BonxieTabs");
+
+            int tabIndex = 1;
+            foreach (var kvp in _tabs)
+            {
+                if (kvp.Value?.Process == null || kvp.Value.Process.HasExited)
+                    continue;
+
+                int pid = kvp.Value.Process.Id;
+                string tabTitle = GetTabTitle(kvp.Key);
+                string username = !string.IsNullOrWhiteSpace(tabTitle) ? tabTitle : $"Skua {tabIndex}";
+                try
+                {
+                    string userFile = Path.Combine(dir, $"{pid}.txt");
+                    if (File.Exists(userFile))
+                    {
+                        string u = File.ReadAllText(userFile).Trim();
+                        if (!string.IsNullOrWhiteSpace(u) && !u.StartsWith("Tab ", StringComparison.OrdinalIgnoreCase))
+                            username = u;
+                    }
+                }
+                catch { }
+                tabIndex++;
+
+                string map = "";
+                string cell = "";
+                string pad = "";
+                string server = "";
+                int hp = 0;
+                int maxHp = 0;
+                int mp = 0;
+                int maxMp = 0;
+                bool isScriptRunning = false;
+                string scriptName = "";
+
+                string locFile = Path.Combine(dir, $"{pid}.location.json");
+                if (File.Exists(locFile))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(locFile));
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("Map", out var mpProp)) map = mpProp.GetString() ?? "";
+                        if (root.TryGetProperty("Cell", out var clProp)) cell = clProp.GetString() ?? "";
+                        if (root.TryGetProperty("Pad", out var pdProp)) pad = pdProp.GetString() ?? "";
+                        if (root.TryGetProperty("Server", out var svProp)) server = svProp.GetString() ?? "";
+                        if (root.TryGetProperty("Hp", out var hProp)) hp = hProp.GetInt32();
+                        if (root.TryGetProperty("MaxHp", out var mhProp)) maxHp = mhProp.GetInt32();
+                        if (root.TryGetProperty("Mp", out var mProp)) mp = mProp.GetInt32();
+                        if (root.TryGetProperty("MaxMp", out var mmProp)) maxMp = mmProp.GetInt32();
+                        if (root.TryGetProperty("ScriptRunning", out var srProp)) isScriptRunning = srProp.GetBoolean();
+                        if (root.TryGetProperty("ScriptName", out var snProp)) scriptName = snProp.GetString() ?? "";
+                    }
+                    catch { }
+                }
+
+                list.Add(new
+                {
+                    pid = pid,
+                    username = username,
+                    is_active = (pid == activePid),
+                    map = map,
+                    cell = cell,
+                    pad = pad,
+                    server = server,
+                    hp = hp,
+                    max_hp = maxHp,
+                    mp = mp,
+                    max_mp = maxMp,
+                    script_running = isScriptRunning,
+                    script_name = scriptName
+                });
+            }
+            return list;
+        }
+        catch
+        {
+            return new List<object>();
+        }
+    }
+
+    #endregion Remote Control Gateway Helpers
 
     #endregion Tab Management
 }

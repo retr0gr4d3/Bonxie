@@ -170,6 +170,7 @@
                                                         DragDrop.AllowDrop="True"
                                                         PointerPressed="OnSquadTabPointerPressed"
                                                         PointerMoved="OnSquadTabPointerMoved"
+                                                        PointerReleased="OnSquadTabPointerReleased"
                                                         DragDrop.DragOver="OnSquadTabDragOver"
                                                         DragDrop.Drop="OnSquadTabDrop">
                                                     <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">

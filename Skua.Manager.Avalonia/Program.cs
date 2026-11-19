@@ -39,6 +39,10 @@ internal static class Program
                 .OnRestarted(_ => AppShortcutHelper.CreateOrUpdateShortcuts(createIfMissing: true))
                 .Run();
         }
+        else
+        {
+            VelopackApp.Build().Run();
+        }
 
         // ponytail: named events throw PlatformNotSupportedException off Windows, so Linux allows
         // several managers. Add a named Mutex + socket wake if that becomes a problem.

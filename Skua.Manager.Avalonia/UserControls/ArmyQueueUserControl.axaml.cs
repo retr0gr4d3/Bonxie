@@ -9,10 +9,11 @@ namespace Skua.Manager.Avalonia.UserControls;
 
 public partial class ArmyQueueUserControl : UserControl
 {
+    private static readonly DataFormat<ArmyQueueStepViewModel> ArmyQueueStepDataFormat = DataFormat.CreateInProcessFormat<ArmyQueueStepViewModel>("army-queue-step");
     private ArmyQueueViewModel? _currentVm;
     private ArmyQueueStepViewModel? _draggedStep;
-    private PointerPressedEventArgs? _dragPressedArgs;
     private Point _dragStartPoint;
+    private PointerPressedEventArgs? _dragStartEvent;
 
     public ArmyQueueUserControl()
     {
@@ -45,13 +46,13 @@ public partial class ArmyQueueUserControl : UserControl
             return;
 
         _draggedStep = step;
-        _dragPressedArgs = e;
         _dragStartPoint = e.GetPosition(control);
+        _dragStartEvent = e;
     }
 
     private async void OnSquadTabPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (_currentVm?.IsRunning == true || _draggedStep == null || _dragPressedArgs == null ||
+        if (_currentVm?.IsRunning == true || _draggedStep == null || _dragStartEvent == null ||
             sender is not Control control ||
             !e.GetCurrentPoint(control).Properties.IsLeftButtonPressed)
             return;
@@ -62,22 +63,32 @@ public partial class ArmyQueueUserControl : UserControl
             return;
 
         ArmyQueueStepViewModel step = _draggedStep;
-        PointerPressedEventArgs pressedArgs = _dragPressedArgs;
-        _dragPressedArgs = null;
+        PointerPressedEventArgs dragStartEvent = _dragStartEvent;
+        _dragStartEvent = null;
+
         DataTransfer data = new();
-        data.Add(DataTransferItem.Create(StepDragFormat, step));
-        await DragDrop.DoDragDropAsync(pressedArgs, data, DragDropEffects.Move);
-        _draggedStep = null;
+        data.Add(DataTransferItem.Create(ArmyQueueStepDataFormat, step));
+
+        try
+        {
+            await DragDrop.DoDragDropAsync(dragStartEvent, data, DragDropEffects.Move);
+        }
+        finally
+        {
+            _draggedStep = null;
+        }
     }
 
-    private static readonly DataFormat<ArmyQueueStepViewModel> StepDragFormat =
-        DataFormat.CreateInProcessFormat<ArmyQueueStepViewModel>("ArmyQueueStep");
+    private void OnSquadTabPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _draggedStep = null;
+        _dragStartEvent = null;
+    }
 
     private void OnSquadTabDragOver(object? sender, DragEventArgs e)
     {
         e.DragEffects = _currentVm?.IsRunning == false &&
-                        e.DataTransfer.Contains(StepDragFormat) &&
-                        _draggedStep is not null
+                        e.DataTransfer.TryGetValue(ArmyQueueStepDataFormat) is ArmyQueueStepViewModel
             ? DragDropEffects.Move
             : DragDropEffects.None;
         e.Handled = true;
@@ -86,8 +97,7 @@ public partial class ArmyQueueUserControl : UserControl
     private void OnSquadTabDrop(object? sender, DragEventArgs e)
     {
         if (_currentVm?.IsRunning != false ||
-            !e.DataTransfer.Contains(StepDragFormat) ||
-            _draggedStep is not { } draggedStep ||
+            e.DataTransfer.TryGetValue(ArmyQueueStepDataFormat) is not ArmyQueueStepViewModel draggedStep ||
             sender is not Control control ||
             control.DataContext is not ArmyQueueStepViewModel targetStep)
             return;

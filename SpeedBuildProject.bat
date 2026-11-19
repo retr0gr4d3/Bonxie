@@ -194,7 +194,7 @@ rem ----------------------------------------------------------
 
 echo.
 echo Packaging and organizing output...
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "package-build.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "BuildTools\package-build.ps1"
 if errorlevel 1 goto :Failure
 
 if not exist "Build\Bonxie.exe" (

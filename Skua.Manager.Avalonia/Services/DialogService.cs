@@ -98,6 +98,7 @@ public class DialogService : IDialogService
         return index < 0 ? DialogResult.Cancelled : new DialogResult(clicked, index);
     }
 
+
     public IInputDialogViewModel CreateInputDialog(string title, string dialogHint)
     {
         return new InputDialogViewModel(title, dialogHint);
@@ -115,6 +116,7 @@ public class DialogService : IDialogService
             SelectAccountDialogViewModel selectAccount => ShowSelectAccountDialog(selectAccount, title),
             MessageBoxDialogViewModel messageBox => ShowMessageBox(messageBox.Message, messageBox.Title, messageBox.YesAndNo),
             CustomDialogViewModel custom => ShowCustomDialog(custom, title),
+            JobEditorDialogViewModel jobEditor => ShowJobEditorDialog(jobEditor, title),
             _ => ShowFallbackDialog(viewModel, title)
         };
     }
@@ -276,7 +278,7 @@ public class DialogService : IDialogService
             }
         };
         dialog.Content = WrapWithShell(title, content);
-        Show(dialog);
+        Show(dialog, input);
         return result;
     }
 
@@ -503,6 +505,21 @@ public class DialogService : IDialogService
         return index >= 0;
     }
 
+    private static bool? ShowJobEditorDialog(JobEditorDialogViewModel vm, string title)
+    {
+        Window dialog = CreateBaseDialog(title);
+        dialog.Width = 640;
+        dialog.Height = 720;
+        dialog.CanResize = true;
+
+        vm.CloseAction = () => dialog.Close();
+        dialog.Closed += (_, _) => vm.Cleanup();
+
+        dialog.Content = WrapWithShell(title, new ContentControl { Content = vm });
+        Show(dialog);
+        return vm.DialogResult;
+    }
+
     private static bool? ShowFallbackDialog<TViewModel>(TViewModel vm, string title) where TViewModel : class
     {
         Window dialog = CreateBaseDialog(title);
@@ -623,7 +640,7 @@ public class DialogService : IDialogService
             Width = 420,
             SizeToContent = SizeToContent.Height,
             CanResize = false,
-            WindowStartupLocation = WindowStartupLocation.Manual,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
             WindowDecorations = WindowDecorations.BorderOnly,
             ExtendClientAreaToDecorationsHint = true,
             ExtendClientAreaTitleBarHeightHint = 32,
@@ -674,17 +691,20 @@ public class DialogService : IDialogService
         return rootBorder;
     }
 
-    private static void Show(Window dialog)
+    // initialFocus: the control that takes focus when the dialog opens (e.g. an input box); otherwise the default button.
+    private static void Show(Window dialog, Control? initialFocus = null)
     {
-        Skua.Shared.Avalonia.Services.WindowPlacementHelper.CenterOnActiveScreen(dialog);
+        Skua.Shared.Avalonia.Services.PointerCaptureReset.Release();
         Window? owner = GetOwner();
         if (owner != null)
         {
-            ShowModalAndBlock(dialog, owner);
+            dialog.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            ShowModalAndBlock(dialog, owner, initialFocus);
             return;
         }
 
-        ShowAndBlock(dialog);
+        dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        ShowAndBlock(dialog, initialFocus);
     }
 
     private static Window? GetOwner()
@@ -703,11 +723,11 @@ public class DialogService : IDialogService
         return desktop.MainWindow?.IsVisible == true ? desktop.MainWindow : null;
     }
 
-    private static void ShowModalAndBlock(Window dialog, Window owner)
+    private static void ShowModalAndBlock(Window dialog, Window owner, Control? initialFocus)
     {
         using CancellationTokenSource closedCts = new();
         void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
+        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog, initialFocus);
 
         dialog.Closed += OnClosed;
         dialog.Opened += OnOpened;
@@ -728,11 +748,11 @@ public class DialogService : IDialogService
         }
     }
 
-    private static void ShowAndBlock(Window dialog)
+    private static void ShowAndBlock(Window dialog, Control? initialFocus)
     {
         using CancellationTokenSource closedCts = new();
         void OnClosed(object? _, EventArgs __) => closedCts.Cancel();
-        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog);
+        void OnOpened(object? _, EventArgs __) => FocusDefaultDialogAction(dialog, initialFocus);
 
         dialog.Closed += OnClosed;
         dialog.Opened += OnOpened;
@@ -753,10 +773,17 @@ public class DialogService : IDialogService
         }
     }
 
-    private static void FocusDefaultDialogAction(Window dialog)
+    private static void FocusDefaultDialogAction(Window dialog, Control? initialFocus)
     {
         dialog.Activate();
         dialog.Focus();
+        if (initialFocus?.Focus() == true)
+        {
+            // Select any prefilled text so typing replaces it.
+            (initialFocus as TextBox)?.SelectAll();
+            return;
+        }
+
         dialog.GetVisualDescendants()
             .OfType<Button>()
             .FirstOrDefault(b => b.IsDefault)?

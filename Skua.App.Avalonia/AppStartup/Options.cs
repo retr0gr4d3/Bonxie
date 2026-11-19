@@ -369,15 +369,52 @@ internal class Options
                 SendMugetsuSetting(name, value);
         }
     }
+    private static readonly Dictionary<string, string> GameOptionDescriptions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "EnableScriptWatchdog", "Monitors scripts for silent deadlocks or death freezes and triggers automatic recovery." },
+        { "ScriptWatchdogTimeout", "Seconds of zero forward progress before the watchdog triggers recovery (default: 300s / 5m)." },
+        { "WatchdogAutoRestart", "Automatically restarts the script if the character remains stuck after soft rescue and map reload." },
+        { "WatchdogDiscordAlerts", "Sends an alert to your configured Discord webhook when a script freezes and gets auto-restarted." },
+        { "LagKiller", "Hides game animations and stops rendering to minimize CPU and GPU usage." },
+        { "HidePlayers", "Hides other players in the room to reduce lag and improve FPS." },
+        { "OptimizePlayers", "Optimizes player avatar rendering." },
+        { "DisableFX", "Disables visual skill effects, particles, and spell animations." },
+        { "DisableCollisions", "Allows your character to walk through walls and map barriers." },
+        { "ShowFPS", "Displays the current frames per second on screen." },
+        { "SetFPS", "Sets the maximum target frame rate for the game." },
+        { "AggroMonsters", "Causes all monsters in the current room to attack you simultaneously." },
+        { "AggroAllMonsters", "Provokes all monsters across the entire map at the same time." },
+        { "AttackWithoutTarget", "Uses combat skills even without an active monster targeted." },
+        { "InfiniteRange", "Allows attacking monsters from anywhere in the current cell." },
+        { "Magnetise", "Pulls item drops directly to the player." },
+        { "SafeTimings", "Enforces a safety buffer on game actions to prevent disconnects." },
+        { "AcceptACDrops", "Automatically accepts any AdventureCoin (AC) item that drops." },
+        { "AcceptAllDrops", "Automatically picks up every dropped item." },
+        { "RejectAllDrops", "Automatically declines all non-AC item drops." },
+        { "AutoRelogin", "Automatically logs back in and resumes if disconnected from the server." },
+        { "AutoReloginAny", "Relogs into any available server instead of only the last server." },
+        { "ReloginFallback", "Falls back to direct socket connection if the login UI hangs." },
+        { "RetryRelogin", "Retries logging in multiple times if the first attempt fails." },
+        { "SafeRelogin", "Adds a 1-minute 15-second ghost session delay before relogging." },
+        { "ReloginTries", "Maximum number of login attempts before giving up." },
+        { "LoginTimeout", "Maximum seconds to wait for authentication and world loading." },
+        { "SkipCutscenes", "Automatically skips in-game story cutscenes and dialogs." },
+        { "HeadlessMode", "Collapses the Flash viewport to 1x1 pixel to drastically reduce CPU and RAM." },
+        { "ReloginServer", "The preferred server to reconnect to during auto-relogin." }
+    };
+
+    private static string GetGameOptionDescription(string binding) =>
+        GameOptionDescriptions.TryGetValue(binding, out string? desc) ? desc : string.Empty;
+
     internal static GameOptionsViewModel CreateGameOptions(IServiceProvider s)
     {
         IScriptOption scriptOpt = s.GetService<IScriptOption>()!;
 
         List<DisplayOptionItemViewModelBase> options = new()
         {
-            new CommandOptionItemViewModel<bool>("Upgrade Name Colour", "1", CreateBoolCommand(b => Ioc.Default.GetRequiredService<IFlashUtil>().SetGameObject("world.myAvatar.pMC.pname.ti.textColor", b ? 0x8CD5FF : 0xFFFFFF))),
-            new CommandOptionItemViewModel<bool>("Staff Name Colour", "1", CreateBoolCommand(b => Ioc.Default.GetRequiredService<IFlashUtil>().SetGameObject("world.myAvatar.pMC.pname.ti.textColor", b ? 0xFECB38 : 0xFFFFFF))),
-            new CommandOptionItemViewModel<IRelayCommand>("Reload Map", "4", new RelayCommand(Ioc.Default.GetRequiredService<IScriptMap>().Reload)) { ActionText = "Reload" }
+            new CommandOptionItemViewModel<bool>("Upgrade Name Colour", "Display your character name in upgrade/member blue colour", "1", CreateBoolCommand(b => Ioc.Default.GetRequiredService<IFlashUtil>().SetGameObject("world.myAvatar.pMC.pname.ti.textColor", b ? 0x8CD5FF : 0xFFFFFF))),
+            new CommandOptionItemViewModel<bool>("Staff Name Colour", "Display your character name in staff/moderator gold colour", "1", CreateBoolCommand(b => Ioc.Default.GetRequiredService<IFlashUtil>().SetGameObject("world.myAvatar.pMC.pname.ti.textColor", b ? 0xFECB38 : 0xFFFFFF))),
+            new CommandOptionItemViewModel<IRelayCommand>("Reload Map", "Reloads the current map room to refresh monsters and clear stuck states", "4", new RelayCommand(Ioc.Default.GetRequiredService<IScriptMap>().Reload)) { ActionText = "Reload" }
         };
 
         foreach (PropertyInfo pi in scriptOpt.GetType().GetProperties())
@@ -390,7 +427,7 @@ internal class Options
                 options.Add(CreateOptionItem<string>(s, pi.Name, "2", new RelayCommand<string>(value => pi.SetValue(scriptOpt, value))));
             else if (pi.PropertyType == typeof(int))
             {
-                string? suffixText = pi.Name == nameof(IScriptOption.SetFPS) ? "FPS" : null;
+                string? suffixText = pi.Name == nameof(IScriptOption.SetFPS) ? "FPS" : pi.Name == nameof(IScriptOption.ScriptWatchdogTimeout) ? "s" : null;
                 options.Add(CreateOptionItemWithSuffix<int>(s, pi.Name, "3", suffixText, new RelayCommand<string>(value =>
                 {
                     if (!int.TryParse(value, out int result))
@@ -403,12 +440,12 @@ internal class Options
         return new GameOptionsViewModel(options, s.GetService<IScriptServers>()!, scriptOpt);
 
         static RelayCommand<bool> CreateBoolCommand(Action<bool> action) => new(action);
-        static BindingOptionItemViewModel<T, ScriptOption> CreateOptionItem<T>(IServiceProvider s, string binding, string tag, IRelayCommand command) => new(Label(s, binding), tag, binding, (ScriptOption)s.GetRequiredService<IScriptOption>(), command);
+        static BindingOptionItemViewModel<T, ScriptOption> CreateOptionItem<T>(IServiceProvider s, string binding, string tag, IRelayCommand command) => new(Label(s, binding), GetGameOptionDescription(binding), tag, binding, (ScriptOption)s.GetRequiredService<IScriptOption>(), command);
         // The decamelizer keeps "ACDrops" together
         static string Label(IServiceProvider s, string binding) => binding == nameof(IScriptOption.AcceptACDrops) ? "Accept AC Drops" : s.GetRequiredService<IDecamelizer>().Decamelize(binding, null);
         static BindingOptionItemViewModel<T, ScriptOption> CreateOptionItemWithSuffix<T>(IServiceProvider s, string binding, string tag, string? suffixText, IRelayCommand command)
         {
-            BindingOptionItemViewModel<T, ScriptOption> item = new(s.GetRequiredService<IDecamelizer>().Decamelize(binding, null), tag, binding, (ScriptOption)s.GetRequiredService<IScriptOption>(), command)
+            BindingOptionItemViewModel<T, ScriptOption> item = new(s.GetRequiredService<IDecamelizer>().Decamelize(binding, null), GetGameOptionDescription(binding), tag, binding, (ScriptOption)s.GetRequiredService<IScriptOption>(), command)
             {
                 SuffixText = suffixText
             };
@@ -422,6 +459,7 @@ internal class Options
         {
             CreateSettingOptionItem<bool>("Show Username in Title", "Whether to display logged-in character name in window title", "ShowUsernameInTitle"),
             CreateSettingOptionItem<bool>("Save Logs to File", "Append the Script and Debug logs to logs/<account>_<date>.log in the Bonxie folder (repeated lines collapsed, 5 MB per file, kept 14 days)", "LogToFile"),
+            CreateSettingOptionItem<bool>("Auto-jump on Position Change", "Automatically jump when selecting a map cell or pad in the Jump control", "AutoJumpOnPositionChange"),
             new CommandOptionItemViewModel<bool>("Grandpa Mode", "Larger, easier-to-read text in logs and packet output", "GrandpaMode", new RelayCommand<bool>(enabled =>
             {
                 ISettingsService settings = Ioc.Default.GetRequiredService<ISettingsService>();
@@ -442,6 +480,26 @@ internal class Options
             new CommandOptionItemViewModel<IRelayCommand>("Test Skua Nexus Webhook", new AsyncRelayCommand(async () => {
                 await Ioc.Default.GetRequiredService<IDiscordWebhookService>().TestNexusWebhookAsync();
             })) { ActionText = "Test" },
+            new CommandOptionItemViewModel<bool>("Remote Control Server Enabled", "Run local HTTP server for Android controller and mobile dashboard connectivity", "RemoteControlServerEnabled", new RelayCommand<bool>(enabled =>
+            {
+                Ioc.Default.GetRequiredService<ISettingsService>().Set("RemoteControlServerEnabled", enabled);
+                var remoteService = Ioc.Default.GetService<IRemoteControlService>();
+                if (enabled)
+                    remoteService?.Start();
+                else
+                    remoteService?.Stop();
+            }), s.GetRequiredService<ISettingsService>().Get<bool>("RemoteControlServerEnabled")),
+            new CommandOptionItemViewModel<int>("Remote Control Server Port", "Port for mobile controller and dashboard (default: 8088)", "RemoteControlPort", "Port", new RelayCommand<string>(value =>
+            {
+                if (!int.TryParse(value, out int result) || result < 1024 || result > 65535) return;
+                Ioc.Default.GetRequiredService<ISettingsService>().Set("RemoteControlPort", result);
+                var remoteService = Ioc.Default.GetService<IRemoteControlService>();
+                if (remoteService != null && remoteService.IsRunning)
+                {
+                    remoteService.Stop();
+                    remoteService.Start();
+                }
+            }), s.GetRequiredService<ISettingsService>().Get<int>("RemoteControlPort")),
             CreateSettingOptionItem<bool>("Notify on Script Started", "Send alerts and initial statistics when a script starts running", "WebhookNotifyStarted"),
             CreateSettingOptionItem<bool>("Notify on Script Stopped", "Send session summary and statistics when a script finishes or stops", "WebhookNotifyStopped"),
             CreateSettingOptionItem<bool>("Notify on Script Crashed", "Send alerts when a script crashes with an error", "WebhookNotifyCrashed"),
@@ -466,6 +524,18 @@ internal class Options
                     return;
                 Ioc.Default.GetRequiredService<ISettingsService>().Set("ReloginTryDelay", result);
             }), s.GetRequiredService<ISettingsService>().Get<int>("ReloginTryDelay")),
+            new CommandOptionItemViewModel<int>("High Latency Threshold", "Servers at or above this ping are marked high latency in the Manager server list (default: 200 ms)", "ServerLatencyThresholdMs", "ms", new RelayCommand<string>(value =>
+            {
+                if (!int.TryParse(value, out int result) || result < 50 || result > 2000)
+                    return;
+                Ioc.Default.GetRequiredService<ISettingsService>().Set("ServerLatencyThresholdMs", result);
+            }), s.GetRequiredService<ISettingsService>().Get<int>("ServerLatencyThresholdMs", 200)),
+            new CommandOptionItemViewModel<int>("Approaching Latency Threshold", "Amber status begins at this percentage of the high-latency threshold (default: 75%)", "ServerLatencyNearThresholdPercent", "%", new RelayCommand<string>(value =>
+            {
+                if (!int.TryParse(value, out int result) || result < 50 || result > 95)
+                    return;
+                Ioc.Default.GetRequiredService<ISettingsService>().Set("ServerLatencyNearThresholdPercent", result);
+            }), s.GetRequiredService<ISettingsService>().Get<int>("ServerLatencyNearThresholdPercent", 75)),
             CreateSettingOptionItem<bool>("Relogin Watchdog", "Watch for unexpected disconnections, even with no script running, and relog when Auto Relogin (Game Options) is on. Off leaves relogs to kicks and server logouts", "ReloginWatchdog"),
             new CommandOptionItemViewModel<IRelayCommand>("Clear Flash Cache", "ClearFlashCache", new RelayCommand(() =>
             {
