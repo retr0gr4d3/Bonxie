@@ -409,7 +409,7 @@ public partial class TabbedHostWindow : Window
         HotKeys.RegisterHotkey("OpenQuickLaunch", new CommunityToolkit.Mvvm.Input.RelayCommand(OpenQuickLaunch));
         AccountQuickLaunchSearch.KeyDown += AccountQuickLaunchSearch_KeyDown;
         LoadArmyJumpSettings();
-        Title = "Bonxie Beta 7";
+        Title = "Bonxie Beta 8";
         MainTitleBar.TitleText = Title;
 
         try
