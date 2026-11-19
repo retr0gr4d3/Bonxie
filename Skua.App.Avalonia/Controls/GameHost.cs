@@ -124,6 +124,7 @@ public class GameHost : NativeControlHost
     private int _pendingResizeH;
     private int _lastSentWidth;
     private int _lastSentHeight;
+    private bool _forceNextResize;
 
     public nint WindowHandle => (nint)_childXid;
 
@@ -338,8 +339,18 @@ public class GameHost : NativeControlHost
 
     private void OnOwnerWindowPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        if (e.Property == Window.WindowStateProperty || e.Property == IsVisibleProperty)
+        if (e.Property == Window.WindowStateProperty)
+        {
+            _forceNextResize = true;
+            if (IsHostEffectivelyVisible)
+                ScheduleResizeDebounce();
+            else
+                _resizeDebounceTimer?.Stop();
+        }
+        else if (e.Property == IsVisibleProperty)
+        {
             UpdateHostedVisibility();
+        }
     }
 
     private bool IsHostEffectivelyVisible =>
@@ -408,7 +419,12 @@ public class GameHost : NativeControlHost
 
         _pendingResizeW = w;
         _pendingResizeH = h;
-        _resizeDebounceTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        ScheduleResizeDebounce();
+    }
+
+    private void ScheduleResizeDebounce()
+    {
+        _resizeDebounceTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _resizeDebounceTimer.Tick -= OnResizeDebounceTick;
         _resizeDebounceTimer.Tick += OnResizeDebounceTick;
         _resizeDebounceTimer.Stop();
@@ -420,9 +436,14 @@ public class GameHost : NativeControlHost
         _resizeDebounceTimer?.Stop();
         if (!OperatingSystem.IsLinux() || _flash is null || !IsHostEffectivelyVisible)
             return;
-        int w = _pendingResizeW;
-        int h = _pendingResizeH;
-        if (w <= 2 || h <= 2 || (w == _lastSentWidth && h == _lastSentHeight))
+        double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
+        int bw = (int)Math.Round(Bounds.Width * scale);
+        int bh = (int)Math.Round(Bounds.Height * scale);
+        int w = bw > 2 ? bw : _pendingResizeW;
+        int h = bh > 2 ? bh : _pendingResizeH;
+        bool force = _forceNextResize;
+        _forceNextResize = false;
+        if (w <= 2 || h <= 2 || (!force && w == _lastSentWidth && h == _lastSentHeight))
             return;
         _lastSentWidth = w;
         _lastSentHeight = h;

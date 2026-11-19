@@ -387,7 +387,7 @@ fn run_x11_host(
         if packed != 0 {
             let rw = (packed >> 32) as u32;
             let rh = (packed & 0xFFFF_FFFF) as u32;
-            if rw >= 2 && rh >= 2 && (rw != cur_w || rh != cur_h) {
+            if rw >= 2 && rh >= 2 {
                 cur_w = rw;
                 cur_h = rh;
                 apply_window_size(&conn, target_win, cur_w, cur_h);
