@@ -166,11 +166,19 @@ public class FlashUtil : IFlashUtil
                 if (generation != Volatile.Read(ref _playerGeneration))
                     return;
 
+                // One player, one bridge. Anything else that finds the port while the player is connected is turned
+                // away instead of replacing it: the bridge carries logins and can make the client act.
+                if (_bridge is not null)
+                {
+                    Trace.WriteLine("Refused a second connection to the game player bridge.");
+                    return;
+                }
+
                 // Fail old pending calls and publish the new writer under _sendLock so Call()
                 // cannot register a request for the old writer after FailPending() or have a
                 // new-writer request cleared by it.
                 FailPending();
-                Interlocked.Exchange(ref _bridge, writer)?.Dispose();
+                Volatile.Write(ref _bridge, writer);
                 try
                 {
                     foreach (string settingJson in _lastMugetsuSettings.Values)
@@ -431,7 +439,5 @@ public class FlashUtil : IFlashUtil
         StopPlayer();
         _listener?.Stop();
         _listener = null;
-        _bridge?.Dispose();
-        FailPending();
     }
 }

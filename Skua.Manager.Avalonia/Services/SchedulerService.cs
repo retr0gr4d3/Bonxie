@@ -862,49 +862,19 @@ public sealed class SchedulerService : ISchedulerService, IDisposable
                 ? server
                 : _settingsService.Get("LastServer", "Twilly");
 
-            ProcessStartInfo psi = new(exePath)
+            bool runScript = !string.IsNullOrWhiteSpace(scriptPath);
+            Process? process = new ClientLaunch
             {
-                WorkingDirectory = SkuaExecutableLocator.WorkingDirectory,
-                ArgumentList =
-                {
-                    "-u",
-                    acc.Username,
-                    "-p",
-                    acc.Password,
-                    "-s",
-                    targetServer
-                }
-            };
-
-            if (!string.IsNullOrWhiteSpace(scriptPath))
-            {
-                psi.ArgumentList.Add("--run-script");
-                psi.ArgumentList.Add(scriptPath);
-
-                if (!string.IsNullOrWhiteSpace(optionsStorage))
-                {
-                    psi.ArgumentList.Add("--script-options-storage");
-                    psi.ArgumentList.Add(optionsStorage);
-                }
-            }
-            else if (!string.IsNullOrWhiteSpace(playlistPath))
-            {
-                psi.ArgumentList.Add("--run-playlist");
-                psi.ArgumentList.Add(playlistPath);
-            }
-
-            if (exitOnFinish)
-            {
-                psi.ArgumentList.Add("--exit-on-script-stop");
-            }
-
-            if (_settingsService.Get("syncTheme", false))
-            {
-                psi.ArgumentList.Add("--use-theme");
-                psi.ArgumentList.Add(_settingsService.Get("CurrentTheme", "no-theme"));
-            }
-
-            Process? process = Process.Start(psi);
+                Username = acc.Username,
+                Password = acc.Password,
+                Server = targetServer,
+                ScriptPath = scriptPath,
+                RunScript = runScript,
+                ScriptOptionsStorage = optionsStorage,
+                PlaylistPath = runScript ? null : playlistPath,
+                ExitOnScriptStop = exitOnFinish,
+                Theme = _settingsService.Get("syncTheme", false) ? _settingsService.Get("CurrentTheme", "no-theme") : null
+            }.Start();
             if (process != null)
             {
                 StrongReferenceMessenger.Default.Send(new AddProcessMessage(process, acc.DisplayOrUsername));

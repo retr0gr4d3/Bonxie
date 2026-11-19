@@ -13,10 +13,7 @@ public partial class AccountEditorViewModel : ObservableObject
         Account = account;
         _username = account.Username ?? string.Empty;
         _displayName = account.DisplayName ?? string.Empty;
-        string pass = account.Password ?? string.Empty;
-        if (pass.StartsWith("enc:"))
-            pass = Skua.Core.Utils.CryptoUtils.Decrypt(pass);
-        _password = pass;
+        _password = Skua.Core.Utils.CryptoUtils.Decrypt(account.Password ?? string.Empty);
         _tags = account.Tags != null ? string.Join(", ", account.Tags) : string.Empty;
     }
 

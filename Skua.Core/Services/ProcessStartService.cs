@@ -19,40 +19,33 @@ public class ProcessStartService : IProcessService
 
     public void OpenLink(string link)
     {
-        if (OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux())
         {
-            if (string.IsNullOrWhiteSpace(link)
-                || !Uri.TryCreate(link, UriKind.Absolute, out Uri? uri)
-                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-                return;
-
-            _ = System.Threading.Tasks.Task.Run(() =>
-            {
-                try
-                {
-                    ProcessStartInfo psi = new("xdg-open")
-                    {
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    psi.ArgumentList.Add(uri.AbsoluteUri);
-                    if (Process.Start(psi) is { } proc && proc.WaitForExit(1500) && proc.ExitCode != 0)
-                        _dialogService.ShowMessageBox($"Could not open link (xdg-open exited with code {proc.ExitCode}).", "Open Link Error");
-                }
-                catch (Exception ex)
-                {
-                    _dialogService.ShowMessageBox($"Could not open link:\r\n{ex.Message}", "Open Link Error");
-                }
-            });
+            Skua.Core.Utils.Link.OpenBrowser(link);
             return;
         }
 
-        ProcessStartInfo ps = new(link)
+        if (!Skua.Core.Utils.Link.TryGetWebAddress(link, out string address))
+            return;
+
+        _ = System.Threading.Tasks.Task.Run(() =>
         {
-            UseShellExecute = true,
-            Verb = "open"
-        };
-        Process.Start(ps);
+            try
+            {
+                ProcessStartInfo psi = new("xdg-open")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add(address);
+                if (Process.Start(psi) is { } proc && proc.WaitForExit(1500) && proc.ExitCode != 0)
+                    _dialogService.ShowMessageBox($"Could not open link (xdg-open exited with code {proc.ExitCode}).", "Open Link Error");
+            }
+            catch (Exception ex)
+            {
+                _dialogService.ShowMessageBox($"Could not open link:\r\n{ex.Message}", "Open Link Error");
+            }
+        });
     }
 
     public void OpenVSC()

@@ -4,11 +4,13 @@ using System.Net.Http.Headers;
 namespace Skua.Core.Utils;
 
 /// <summary>
-/// HttpClient with connection pooling
+/// HttpClient for GitHub: it carries GitHub credentials, which <see cref="GitHubOnlyAuthorizationHandler"/> sends to
+/// GitHub hosts and nowhere else.
 /// </summary>
 public class WebClient : HttpClient
 {
-    //private readonly string _authString1 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("726820423be5c752df62:63b2a5b1a55fbeade88deab3b6c8914808bad7a6"));
+    // The upstream Skua OAuth app's id and secret. They only raise the API rate limit and are public in every Skua
+    // source tree, so they are not a secret worth guarding, but they still have no business on other hosts.
     private readonly string _authString2 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("449f889db3d655d2ef4a:27863d426bc5bb46c410daf7ed6b479ba4a9f7eb"));
 
     /// <param name="accJson"></param>
@@ -30,13 +32,46 @@ public class WebClient : HttpClient
         Timeout = TimeSpan.FromSeconds(60);
     }
 
-    private static HttpClientHandler CreateHttpClientHandler()
+    private static HttpMessageHandler CreateHttpClientHandler()
     {
-        return new HttpClientHandler()
+        return new GitHubOnlyAuthorizationHandler(new HttpClientHandler()
         {
             MaxConnectionsPerServer = 10,
             UseCookies = false
-        };
+        });
+    }
+}
+
+/// <summary>
+/// Drops the Authorization header from any request that is not HTTPS to a GitHub host, so a GitHub token (the user's
+/// own, when set) can't leak through a client reused for another site.
+/// </summary>
+public sealed class GitHubOnlyAuthorizationHandler : DelegatingHandler
+{
+    /// <summary>Wraps <paramref name="inner"/>.</summary>
+    public GitHubOnlyAuthorizationHandler(HttpMessageHandler inner) : base(inner)
+    {
+    }
+
+    /// <summary>True for HTTPS addresses on github.com, githubusercontent.com and their subdomains.</summary>
+    public static bool IsGitHub(Uri? uri)
+    {
+        if (uri is null || !uri.IsAbsoluteUri || uri.Scheme != Uri.UriSchemeHttps)
+            return false;
+
+        string host = uri.Host;
+        return host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".github.com", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <inheritdoc/>
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (!IsGitHub(request.RequestUri))
+            request.Headers.Authorization = null;
+
+        return base.SendAsync(request, cancellationToken);
     }
 }
 
@@ -65,9 +100,9 @@ public static class HttpClients
     public static WebClient? UserGitHubClient { get; set; } = null;
 
     /// <summary>
-    /// Gets the Map Client
+    /// Client for the game's own servers (maps, server list). It carries no credentials.
     /// </summary>
-    public static WebClient GetAQContent { get; set; } = new(false);
+    public static HttpClient GetAQContent { get; set; } = CreateHttpClient("Skua", TimeSpan.FromSeconds(60));
 
     /// <summary>
     /// Default HttpClient

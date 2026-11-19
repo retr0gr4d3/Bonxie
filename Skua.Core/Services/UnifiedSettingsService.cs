@@ -1,3 +1,4 @@
+using Skua.Core.Interfaces;
 using Skua.Core.Models;
 using System.Collections.Specialized;
 using System.Reflection;
@@ -7,7 +8,8 @@ using System.Threading;
 
 namespace Skua.Core.Services;
 
-public class UnifiedSettingsService
+/// <summary>The settings of the client and the manager, kept together in one file that both processes share.</summary>
+public class UnifiedSettingsService : ISettingsService
 {
     private readonly string _clientSettingsFile;
     private readonly string _managerSettingsFile;
@@ -16,6 +18,12 @@ public class UnifiedSettingsService
     private AppRole _currentRole;
     private bool _initialized = false;
     private readonly Mutex _fileMutex;
+
+    /// <summary>Opens the settings as seen by <paramref name="role"/> (the client or the manager).</summary>
+    public UnifiedSettingsService(AppRole role) : this()
+    {
+        Initialize(role);
+    }
 
     public UnifiedSettingsService()
     {
@@ -37,9 +45,10 @@ public class UnifiedSettingsService
 
             _currentRole = role;
 
+            bool locked = false;
             try
             {
-                _fileMutex.WaitOne();
+                locked = AcquireFileMutex();
 
                 if (!File.Exists(ClientFileSources.SkuaSettingsDIR))
                 {
@@ -64,7 +73,8 @@ public class UnifiedSettingsService
             }
             finally
             {
-                _fileMutex.ReleaseMutex();
+                if (locked)
+                    _fileMutex.ReleaseMutex();
             }
         }
     }
@@ -75,89 +85,25 @@ public class UnifiedSettingsService
         {
             try
             {
-                PropertyInfo? sharedProp = FindPropertyByJsonName(_root.Shared.GetType(), key);
-                if (sharedProp != null)
-                {
-                    object? sharedVal = sharedProp.GetValue(_root.Shared);
-                    if (sharedVal is not null && !IsDefaultOrEmpty(sharedVal))
-                    {
-                        if (typeof(T).IsAssignableFrom(sharedVal.GetType()))
-                        {
-                            value = (T)sharedVal;
-                            return true;
-                        }
-                    }
-                }
+                // Shared settings win, then this app's own section, then the other app's.
+                object[] sections = _currentRole == AppRole.Manager
+                    ? [_root.Shared, _root.Manager, _root.Client]
+                    : [_root.Shared, _root.Client, _root.Manager];
 
-                if (_currentRole == AppRole.Manager)
+                foreach (object section in sections)
                 {
-                    PropertyInfo? managerProp = FindPropertyByJsonName(_root.Manager.GetType(), key);
-                    if (managerProp != null)
+                    if (FindPropertyByJsonName(section.GetType(), key)?.GetValue(section) is T found && !IsDefaultOrEmpty(found))
                     {
-                        object? managerVal = managerProp.GetValue(_root.Manager);
-                        if (managerVal is not null && !IsDefaultOrEmpty(managerVal))
-                        {
-                            if (typeof(T).IsAssignableFrom(managerVal.GetType()))
-                            {
-                                value = (T)managerVal;
-                                return true;
-                            }
-                        }
-                    }
-
-                    PropertyInfo? clientProp = FindPropertyByJsonName(_root.Client.GetType(), key);
-                    if (clientProp != null)
-                    {
-                        object? clientVal = clientProp.GetValue(_root.Client);
-                        if (clientVal is not null && !IsDefaultOrEmpty(clientVal))
-                        {
-                            if (typeof(T).IsAssignableFrom(clientVal.GetType()))
-                            {
-                                value = (T)clientVal;
-                                return true;
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    PropertyInfo? clientProp = FindPropertyByJsonName(_root.Client.GetType(), key);
-                    if (clientProp != null)
-                    {
-                        object? clientVal = clientProp.GetValue(_root.Client);
-                        if (clientVal is not null && !IsDefaultOrEmpty(clientVal))
-                        {
-                            if (typeof(T).IsAssignableFrom(clientVal.GetType()))
-                            {
-                                value = (T)clientVal;
-                                return true;
-                            }
-                        }
-                    }
-
-                    PropertyInfo? managerProp = FindPropertyByJsonName(_root.Manager.GetType(), key);
-                    if (managerProp != null)
-                    {
-                        object? managerVal = managerProp.GetValue(_root.Manager);
-                        if (managerVal is not null && !IsDefaultOrEmpty(managerVal))
-                        {
-                            if (typeof(T).IsAssignableFrom(managerVal.GetType()))
-                            {
-                                value = (T)managerVal;
-                                return true;
-                            }
-                        }
-                    }
-                }
-
-                if (sharedProp != null)
-                {
-                    object? sVal = sharedProp.GetValue(_root.Shared);
-                    if (sVal is not null && typeof(T).IsAssignableFrom(sVal.GetType()))
-                    {
-                        value = (T)sVal;
+                        value = found;
                         return true;
                     }
+                }
+
+                // Nothing set anywhere: an empty shared value still beats the type's default.
+                if (FindPropertyByJsonName(_root.Shared.GetType(), key)?.GetValue(_root.Shared) is T sharedValue)
+                {
+                    value = sharedValue;
+                    return true;
                 }
             }
             catch (Exception)
@@ -611,8 +557,7 @@ public class UnifiedSettingsService
         bool mutexAcquired = false;
         try
         {
-            _fileMutex.WaitOne();
-            mutexAcquired = true;
+            mutexAcquired = AcquireFileMutex();
 
             string tempFile = ClientFileSources.SkuaSettingsDIR + ".tmp";
 
