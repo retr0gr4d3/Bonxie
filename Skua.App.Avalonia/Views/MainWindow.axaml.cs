@@ -898,7 +898,6 @@ public partial class MainWindow : Window
             var options = Ioc.Default.GetRequiredService<IScriptOption>();
             switch (optionId)
             {
-                case 1: options.LagKiller = value; break;
                 case 2: options.HeadlessMode = value; break;
                 case 3: options.HidePlayers = value; break;
                 case 4: options.DisableFX = value; break;

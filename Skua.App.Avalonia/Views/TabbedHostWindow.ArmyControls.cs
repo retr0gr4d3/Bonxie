@@ -117,7 +117,6 @@ public partial class TabbedHostWindow
 
         switch (e.PropertyName)
         {
-            case "LagKiller": optionId = 1; val = options.LagKiller; break;
             case "HeadlessMode": optionId = 2; val = options.HeadlessMode; break;
             case "HidePlayers": optionId = 3; val = options.HidePlayers; break;
             case "DisableFX": optionId = 4; val = options.DisableFX; break;

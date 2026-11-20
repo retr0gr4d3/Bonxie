@@ -43,7 +43,6 @@ public class HotKeys
         "SearchScripts",
         "ToggleAutoAttack",
         "ToggleAutoHunt",
-        "ToggleLagKiller",
         "ToggleHeadlessMode",
         "ToggleStreamerMode",
         "ToggleHidePlayers",
@@ -58,7 +57,6 @@ public class HotKeys
         "ArmyLoginAll",
         "ArmyLogoutAll",
         "ArmyLoadScriptAll",
-        "ArmyToggleLagKiller",
         "ArmyToggleHeadlessMode",
         "ArmyToggleHidePlayers",
         "ArmyToggleDisableFX",
@@ -152,7 +150,6 @@ public class HotKeys
             "ToggleDisableFX" => "Disables all player combat animations to improve frame-rate.",
             "ToggleHidePlayers" => "When enabled, all player avatars are hidden to reduce lag.",
             "ToggleInfiniteRange" => "Allows you to attack targets from any range without moving.",
-            "ToggleLagKiller" => "Disables drawing the world to reduce lag and CPU usage.",
             "ToggleHeadlessMode" => "Suspends DWM repaints and hides the game renderer completely to drastically drop CPU/GPU usage.",
             "ToggleMagnetise" => "When enabled, this will cause all targeted monsters to teleport directly to you.",
             "ToggleRestPackets" => "A rest packet will be sent every second, causing the player to heal when not in combat.",
@@ -215,7 +212,6 @@ public class HotKeys
             "ArmyStopScripts" => "Army Control: Stops the script on all active army clients.",
             "ArmyLoginAll" => "Army Control: Initiates login on all active army clients.",
             "ArmyLogoutAll" => "Army Control: Safely logs out all active army clients.",
-            "ArmyToggleLagKiller" => "Army Control: Toggles Lag Killer on all active army clients.",
             "ArmyToggleHeadlessMode" => "Army Control: Toggles Headless Mode on all active army clients.",
             "ArmyToggleHidePlayers" => "Army Control: Toggles Hide Players on all active army clients.",
             "ArmyToggleDisableFX" => "Army Control: Toggles Disable FX on all active army clients.",
@@ -404,7 +400,6 @@ public class HotKeys
         _hotkeyRegistry["SearchScripts"] = new RelayCommand(() => ExecuteOrForward("SearchScripts", SearchScriptsLocal));
         _hotkeyRegistry["ToggleAutoAttack"] = new RelayCommand(() => ExecuteOrForward("ToggleAutoAttack", ToggleAutoAttackLocal));
         _hotkeyRegistry["ToggleAutoHunt"] = new RelayCommand(() => ExecuteOrForward("ToggleAutoHunt", ToggleAutoHuntLocal));
-        _hotkeyRegistry["ToggleLagKiller"] = new RelayCommand(() => ExecuteOrForward("ToggleLagKiller", ToggleLagKillerLocal));
 
         // Custom Vast Actions
         _hotkeyRegistry["ToggleHeadlessMode"] = new RelayCommand(() => ExecuteOrForward("ToggleHeadlessMode", () => Ioc.Default.GetRequiredService<IScriptOption>().HeadlessMode ^= true));
@@ -425,7 +420,6 @@ public class HotKeys
         _hotkeyRegistry["ArmyLogoutAll"] = new RelayCommand(() => ExecuteOrForward("ArmyLogoutAll", () => BroadcastArmyMessage(0x0400 + 448, 0, 0)));
         _hotkeyRegistry["ArmyLoadScriptAll"] = new RelayCommand(ArmyLoadScriptAllLocal);
         
-        _hotkeyRegistry["ArmyToggleLagKiller"] = new RelayCommand(() => ExecuteOrForward("ArmyToggleLagKiller", () => BroadcastArmyMessage(0x0400 + 450, 1, (Ioc.Default.GetRequiredService<IScriptOption>().LagKiller ^= true) ? 1 : 0)));
         _hotkeyRegistry["ArmyToggleHeadlessMode"] = new RelayCommand(() => ExecuteOrForward("ArmyToggleHeadlessMode", () => BroadcastArmyMessage(0x0400 + 450, 2, (Ioc.Default.GetRequiredService<IScriptOption>().HeadlessMode ^= true) ? 1 : 0)));
         _hotkeyRegistry["ArmyToggleHidePlayers"] = new RelayCommand(() => ExecuteOrForward("ArmyToggleHidePlayers", () => BroadcastArmyMessage(0x0400 + 450, 3, (Ioc.Default.GetRequiredService<IScriptOption>().HidePlayers ^= true) ? 1 : 0)));
         _hotkeyRegistry["ArmyToggleDisableFX"] = new RelayCommand(() => ExecuteOrForward("ArmyToggleDisableFX", () => BroadcastArmyMessage(0x0400 + 450, 4, (Ioc.Default.GetRequiredService<IScriptOption>().DisableFX ^= true) ? 1 : 0)));
@@ -578,12 +572,6 @@ public class HotKeys
     private static void LoadScriptLocal()
     {
         StrongReferenceMessenger.Default.Send<LoadScriptMessage, int>(new(null), (int)MessageChannels.ScriptStatus);
-    }
-
-    private static void ToggleLagKillerLocal()
-    {
-        IScriptOption options = Ioc.Default.GetRequiredService<IScriptOption>();
-        options.LagKiller = !options.LagKiller;
     }
 
     private static void BroadcastArmyMessage(uint msg, int wParam, int lParam)

@@ -1935,16 +1935,6 @@
                         android:layout_marginBottom="12dp" />
 
                     <Button
-                        android:id="@+id/btnToggleLagKiller"
-                        android:layout_width="match_parent"
-                        android:layout_height="48dp"
-                        android:background="@drawable/bg_box"
-                        android:text="Lag Killer"
-                        android:textColor="@color/white"
-                        android:textSize="13sp"
-                        android:layout_marginBottom="8dp" />
-
-                    <Button
                         android:id="@+id/btnToggleAutoRelogin"
                         android:layout_width="match_parent"
                         android:layout_height="48dp"

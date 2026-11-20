@@ -184,7 +184,7 @@ public class MainActivity extends AppCompatActivity {
     private Button btnChatChanZone, btnChatChanParty, btnChatChanGuild, btnChatChanWhisper;
     private final List<Models.ChatMessage> receivedChatMessages = new ArrayList<>();
     private final Set<String> seenChatMessageSignatures = new HashSet<>();
-    private Button btnToggleLagKiller, btnToggleAutoRelogin, btnToggleInfiniteRange;
+    private Button btnToggleAutoRelogin, btnToggleInfiniteRange;
     private Button btnToggleHeadlessMode, btnToggleStreamerMode;
 
     // Vault Unified Hub Subtabs (Bag, Bank, Quests, Drops)
@@ -468,7 +468,6 @@ public class MainActivity extends AppCompatActivity {
         editJoinMap = findViewById(R.id.editJoinMap);
         btnJoinMap = findViewById(R.id.btnJoinMap);
 
-        btnToggleLagKiller = findViewById(R.id.btnToggleLagKiller);
         btnToggleAutoRelogin = findViewById(R.id.btnToggleAutoRelogin);
         btnToggleInfiniteRange = findViewById(R.id.btnToggleInfiniteRange);
         btnToggleHeadlessMode = findViewById(R.id.btnToggleHeadlessMode);
@@ -728,7 +727,6 @@ public class MainActivity extends AppCompatActivity {
 
         setupChatListeners();
 
-        btnToggleLagKiller.setOnClickListener(v -> toggleOption("lag_killer", btnToggleLagKiller));
         btnToggleAutoRelogin.setOnClickListener(v -> toggleOption("auto_relogin", btnToggleAutoRelogin));
         btnToggleInfiniteRange.setOnClickListener(v -> toggleOption("infinite_range", btnToggleInfiniteRange));
         btnToggleHeadlessMode.setOnClickListener(v -> toggleOption("headless_mode", btnToggleHeadlessMode));
@@ -1886,7 +1884,6 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // Options toggles
-        updateToggleState(btnToggleLagKiller, s.lagKiller);
         updateToggleState(btnToggleAutoRelogin, s.autoRelogin);
         updateToggleState(btnToggleInfiniteRange, s.infiniteRange);
         updateToggleState(btnToggleHeadlessMode, s.headlessMode);

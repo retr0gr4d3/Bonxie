@@ -23,7 +23,7 @@ public class ButlerV5Plugin : ISkuaPlugin
             "While following: only fight while the master is fighting.\n" +
             "Off = always attack, like Butler v3 did. Default: Off.", false),
         new Option<bool>("antiLagSummoned", "AntiLag while summoned",
-            "Turn on Skua's AntiLag (Lag Killer, animation cuts, hidden monsters) while\n" +
+            "Turn on Skua's AntiLag (animation cuts, hidden monsters) while\n" +
             "this account is summoned by a master. Great for background alts when you're\n" +
             "running several at once. Note: it hides monsters and animations in this\n" +
             "client until the follow ends. Default: On.",

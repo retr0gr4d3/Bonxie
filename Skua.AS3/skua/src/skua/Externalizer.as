@@ -65,7 +65,6 @@ public class Externalizer {
         this.addCallback("skipCutscenes", World.skipCutscenes);
         this.addCallback("hidePlayers", World.hidePlayers);
         this.addCallback("disableFX", World.disableFX);
-        this.addCallback("killLag", World.killLag);
 
         // Monster
         this.addCallback("availableMonsters", Monster.availableMonstersInCell);

@@ -47,7 +47,6 @@ public class Main extends MovieClip {
     private var gameDomain:ApplicationDomain;
     private var customBGLoader:Loader;
     private var customBGReady:MovieClip = null;
-    public var customBGLagKiller:MovieClip = null;
     private var customBackgroundURL:String;
     private var packetClient:*;
     private var packetDebug:Boolean;
@@ -299,16 +298,6 @@ public class Main extends MovieClip {
             checkTimer.start();
         });
         this.customBGLoader.load(new URLRequest(this.customBackgroundURL));
-        
-        var lagKillerLoader:Loader = new Loader();
-        lagKillerLoader.contentLoaderInfo.addEventListener(Event.COMPLETE, function (e:Event):void {
-            customBGLagKiller = MovieClip(lagKillerLoader.content);
-            if (game) {
-                game.addChildAt(customBGLagKiller, 0);
-                customBGLagKiller.visible = false;
-            }
-        });
-        lagKillerLoader.load(new URLRequest(this.customBackgroundURL));
     }
 
     public function key_StageGame(kbArgs:KeyboardEvent):void {

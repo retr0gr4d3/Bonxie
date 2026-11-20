@@ -2057,7 +2057,7 @@ public class RemoteControlService : IRemoteControlService
         string currentClass = bot?.Player?.CurrentClass?.Name ?? "None";
         int classRank = bot?.Player?.CurrentClassRank ?? 0;
 
-        // Flash fallback if player dataLeaf or direct props are uninitialized / Lag Killer active
+        // Flash fallback if player dataLeaf or direct props are uninitialized
         if (bot?.Flash != null && bot.Flash.IsWorldLoaded)
         {
             if (level <= 0)
@@ -3928,7 +3928,6 @@ public class RemoteControlService : IRemoteControlService
         var bot = _serviceProvider.GetService<IScriptInterface>();
         return new
         {
-            lag_killer = bot?.Options?.LagKiller ?? false,
             auto_relogin = bot?.Options?.AutoRelogin ?? false,
             infinite_range = bot?.Options?.InfiniteRange ?? false,
             skip_cutscenes = bot?.Options?.SkipCutscenes ?? false,
@@ -3976,9 +3975,6 @@ public class RemoteControlService : IRemoteControlService
         string cleanOption = option.Replace("_", "").Replace("-", "").ToLowerInvariant();
         switch (cleanOption)
         {
-            case "lagkiller":
-                bot.Options.LagKiller = boolVal ?? !bot.Options.LagKiller;
-                return RemoteActionResult.Ok("LagKiller toggled", new { option = "LagKiller", value = bot.Options.LagKiller });
             case "autorelogin":
                 bot.Options.AutoRelogin = boolVal ?? !bot.Options.AutoRelogin;
                 return RemoteActionResult.Ok("AutoRelogin toggled", new { option = "AutoRelogin", value = bot.Options.AutoRelogin });
@@ -4442,7 +4438,6 @@ public class RemoteControlService : IRemoteControlService
             <div class="card">
                 <div class="card-title">Options & Toggles</div>
                 <div class="btn-row">
-                    <button class="btn" onclick="toggleOption('LagKiller')">Toggle Lag Killer</button>
                     <button class="btn" onclick="toggleOption('AutoRelogin')">Toggle Auto Relogin</button>
                     <button class="btn" onclick="toggleOption('InfiniteRange')">Toggle Infinite Range</button>
                     <button class="btn" onclick="toggleOption('HeadlessMode')">Toggle Headless Mode</button>

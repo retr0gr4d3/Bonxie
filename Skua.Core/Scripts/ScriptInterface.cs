@@ -398,9 +398,6 @@ public class ScriptInterface : IScriptInterface, IScriptInterfaceManager, IDispo
 
     private void CheckOptions()
     {
-        if (Options.LagKiller)
-            Flash.Call("killLag", true);
-
         if (!Player.Playing)
             return;
 

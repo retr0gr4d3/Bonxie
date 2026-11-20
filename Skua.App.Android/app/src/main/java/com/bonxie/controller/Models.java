@@ -242,7 +242,6 @@ public class Models {
         public List<ChatMessage> recentChat = new ArrayList<>();
 
         // Bot Options
-        public boolean lagKiller;
         public boolean autoRelogin;
         public boolean infiniteRange;
         public boolean headlessMode;
@@ -380,7 +379,6 @@ public class Models {
 
                 JSONObject opt = obj.optJSONObject("options");
                 if (opt != null) {
-                    s.lagKiller = opt.optBoolean("lag_killer", false);
                     s.autoRelogin = opt.optBoolean("auto_relogin", false);
                     s.infiniteRange = opt.optBoolean("infinite_range", false);
                     s.headlessMode = opt.optBoolean("headless_mode", false);

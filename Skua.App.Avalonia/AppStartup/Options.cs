@@ -375,7 +375,6 @@ internal class Options
         { "ScriptWatchdogTimeout", "Seconds of zero forward progress before the watchdog triggers recovery (default: 300s / 5m)." },
         { "WatchdogAutoRestart", "Automatically restarts the script if the character remains stuck after soft rescue and map reload." },
         { "WatchdogDiscordAlerts", "Sends an alert to your configured Discord webhook when a script freezes and gets auto-restarted." },
-        { "LagKiller", "Hides game animations and stops rendering to minimize CPU and GPU usage." },
         { "HidePlayers", "Hides other players in the room to reduce lag and improve FPS." },
         { "OptimizePlayers", "Optimizes player avatar rendering." },
         { "DisableFX", "Disables visual skill effects, particles, and spell animations." },

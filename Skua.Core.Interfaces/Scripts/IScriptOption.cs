@@ -143,9 +143,8 @@ public interface IScriptOption : INotifyPropertyChanged
     bool InfiniteRange { get; set; }
 
     /// <summary>
-    /// Disables drawing the world to (somewhat) reduce lag and CPU usage.
+    /// Removed: Lag Killer no longer exists. Kept as a no-op (always false) so scripts that set it still compile.
     /// </summary>
-    /// <remarks>It is much more effective to minimize the game to reduce CPU usage than to enable this option. For the lowest CPU usage, try both.</remarks>
     bool LagKiller { get; set; }
 
     /// <summary>

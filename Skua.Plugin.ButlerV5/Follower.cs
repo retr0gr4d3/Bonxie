@@ -29,7 +29,7 @@ public class FollowerSettings
     public required Func<bool> UnlockAllQuests { get; init; }
     public required Func<bool> ScriptRunning { get; init; }
 
-    /// <summary>Use Skua's AntiLag (Lag Killer + animation cuts + hidden mobs) while summoned (Ordered).</summary>
+    /// <summary>Use Skua's AntiLag (animation cuts + hidden mobs) while summoned (Ordered).</summary>
     public required Func<bool> AntiLagSummoned { get; init; }
 
     /// <summary>Use Skua's AntiLag while manually following (Manual).</summary>
@@ -763,11 +763,11 @@ public class Follower
     /// Turns Skua's AntiLag on if the option for this follow's source is enabled. Called
     /// from Arm(), so it re-applies after a relogin too (the Flash-side toggles reset on a
     /// game reload). Only touches AntiLag when the matching option is on - it never fights
-    /// a user who has enabled Lag Killer by hand for a source we aren't asked to manage.
+    /// a user who has enabled AntiLag settings by hand for a source we aren't asked to manage.
     /// </summary>
-    /// <summary>The nine AntiLag settings, snapshotted before we force them on.</summary>
+    /// <summary>The eight AntiLag settings, snapshotted before we force them on.</summary>
     private readonly record struct AntiLagSnapshot(
-        bool LagKiller, bool FreezeMonsterPosition, bool DisableMonsterAnimation,
+        bool FreezeMonsterPosition, bool DisableMonsterAnimation,
         bool DisableDamageStrobe, bool DisableSelfAnimation, bool DisableWeaponAnimation,
         bool DisableSkillAnimation, bool DisableAuraAnimations, bool MonstersHidden);
 
@@ -869,7 +869,6 @@ public class Follower
         try
         {
             return new AntiLagSnapshot(
-                _bot.Options.LagKiller,
                 _bot.Lite.FreezeMonsterPosition,
                 _bot.Lite.DisableMonsterAnimation,
                 _bot.Lite.DisableDamageStrobe,
@@ -899,7 +898,6 @@ public class Follower
 
         try
         {
-            _bot.Options.LagKiller = s.LagKiller;
             _bot.Lite.FreezeMonsterPosition = s.FreezeMonsterPosition;
             _bot.Lite.DisableMonsterAnimation = s.DisableMonsterAnimation;
             _bot.Lite.DisableDamageStrobe = s.DisableDamageStrobe;
@@ -919,13 +917,12 @@ public class Follower
         }
     }
 
-    /// <summary>The exact bundle CoreBots' AntiLag uses: Lag Killer, the Lite animation
+    /// <summary>CoreBots' AntiLag bundle minus Lag Killer (removed): the Lite animation
     /// cuts, and hidden monster visuals.</summary>
     private void SetAntiLag(bool on)
     {
         try
         {
-            _bot.Options.LagKiller = on;
             _bot.Lite.FreezeMonsterPosition = on;
             _bot.Lite.DisableMonsterAnimation = on;
             _bot.Lite.DisableDamageStrobe = on;

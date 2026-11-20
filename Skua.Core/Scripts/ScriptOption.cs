@@ -74,9 +74,6 @@ public partial class ScriptOption : ObservableRecipient, IScriptOption, IOptionD
     private void ScriptStopped(ScriptOption recipient, ScriptStoppedMessage message)
     {
         recipient.AutoRelogin = false;
-        recipient.LagKiller = false;
-        recipient.LagKiller = true;
-        recipient.LagKiller = false;
         recipient.AggroAllMonsters = false;
         recipient.AggroMonsters = false;
         recipient.SkipCutscenes = false;
@@ -144,8 +141,8 @@ public partial class ScriptOption : ObservableRecipient, IScriptOption, IOptionD
     [CallBinding("magnetize", UseValue = false, Get = false, HasSetter = true)]
     private bool _magnetise;
 
-    [CallBinding("killLag", Get = false, HasSetter = true)]
-    private bool _lagKiller;
+    // Lag Killer was removed; explicit no-op so scripts still compile while reflection (options UI, save/load) never sees it.
+    bool IScriptOption.LagKiller { get => false; set { } }
 
     [ObjectBinding("stage.frameRate", Get = false, HasSetter = true)]
     private int _setFPS = 30;

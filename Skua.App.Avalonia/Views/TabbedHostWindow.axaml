@@ -429,11 +429,6 @@
                                     <MenuItem.Icon>
                                         <materialIcons:MaterialIcon Kind="TuneVariant" Width="14" Height="14" />
                                     </MenuItem.Icon>
-                                    <MenuItem Header="Lag Killer" ToggleType="CheckBox" StaysOpenOnClick="True" IsChecked="{Binding LagKiller, Mode=TwoWay}">
-                                        <MenuItem.Icon>
-                                            <materialIcons:MaterialIcon Kind="FlashOutline" Width="14" Height="14" />
-                                        </MenuItem.Icon>
-                                    </MenuItem>
                                     <MenuItem Header="Headless Mode" ToggleType="CheckBox" StaysOpenOnClick="True" IsChecked="{Binding HeadlessMode, Mode=TwoWay}">
                                         <MenuItem.Icon>
                                             <materialIcons:MaterialIcon Kind="MonitorOff" Width="14" Height="14" />
